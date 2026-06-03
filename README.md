@@ -20,21 +20,21 @@ A sleek, native macOS menu bar accessory that displays real-time network upload 
 
 ## Installation & Running
 
-This project is a Swift Package executable. You must be on macOS 13+.
+This project is a Swift Package. You must be on macOS 13+.
 
 1. Clone the repository.
-2. Build the project:
+2. Build the project for production:
    ```bash
-   swift build
+   swift build -c release
    ```
-3. Run the executable in the background:
+3. Package it into a standard macOS application:
    ```bash
-   ./.build/debug/network-mon &
+   mkdir -p NetworkMon.app/Contents/MacOS
+   cp .build/release/network-mon NetworkMon.app/Contents/MacOS/NetworkMon
    ```
-   Or open it via Finder:
-   ```bash
-   open .build/debug/network-mon
-   ```
+4. Drag **`NetworkMon.app`** into your Mac's **Applications** folder.
+5. Double-click it to launch! Since it is a menu bar accessory, it will silently appear in the top right of your screen. 
+   *(Tip: Use the dropdown menu to toggle 'Launch at Login' so it starts automatically!)*
 
 ## Releases
 
