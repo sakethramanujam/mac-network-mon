@@ -1,0 +1,345 @@
+import Foundation
+import SwiftUI
+import ServiceManagement
+
+@main
+struct NetworkMonApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    var body: some Scene {
+        Settings {
+            EmptyView()
+        }
+    }
+}
+
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var statusItem: NSStatusItem?
+    var timer: Timer?
+    
+    // Total byte tracking for speed
+    var previousBytesIn: UInt64 = 0
+    var previousBytesOut: UInt64 = 0
+    
+    // Session byte tracking
+    var initialBytesIn: UInt64 = 0
+    var initialBytesOut: UInt64 = 0
+    
+    var availableInterfaces: [String] = []
+
+    // Settings
+    var updateInterval: TimeInterval {
+        get { let v = UserDefaults.standard.double(forKey: "UpdateInterval"); return v > 0 ? v : 1.0 }
+        set { UserDefaults.standard.set(newValue, forKey: "UpdateInterval"); restartTimer(); buildMenu() }
+    }
+    
+    var showInBits: Bool {
+        get { UserDefaults.standard.bool(forKey: "ShowInBits") }
+        set { UserDefaults.standard.set(newValue, forKey: "ShowInBits"); buildMenu(); updateNetworkStats() }
+    }
+    
+    var compactMode: Bool {
+        get { UserDefaults.standard.bool(forKey: "CompactMode") }
+        set { UserDefaults.standard.set(newValue, forKey: "CompactMode"); buildMenu(); updateNetworkStats() }
+    }
+    
+    var hideInactive: Bool {
+        get { UserDefaults.standard.bool(forKey: "HideInactive") }
+        set { UserDefaults.standard.set(newValue, forKey: "HideInactive"); buildMenu(); updateNetworkStats() }
+    }
+    
+    var selectedInterface: String {
+        get { UserDefaults.standard.string(forKey: "SelectedInterface") ?? "All" }
+        set { UserDefaults.standard.set(newValue, forKey: "SelectedInterface"); buildMenu() }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem?.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12.0, weight: .regular)
+        
+        let stats = getNetworkStatsPerInterface()
+        self.availableInterfaces = Array(stats.keys).sorted()
+        
+        let (totalIn, totalOut) = getAggregatedStats(stats)
+        self.previousBytesIn = totalIn
+        self.previousBytesOut = totalOut
+        self.initialBytesIn = totalIn
+        self.initialBytesOut = totalOut
+
+        buildMenu()
+        restartTimer()
+    }
+    
+    func getAggregatedStats(_ stats: [String: (UInt64, UInt64)]) -> (UInt64, UInt64) {
+        if selectedInterface == "All" {
+            var totalIn: UInt64 = 0
+            var totalOut: UInt64 = 0
+            for (_, vals) in stats {
+                totalIn += vals.0
+                totalOut += vals.1
+            }
+            return (totalIn, totalOut)
+        } else {
+            let vals = stats[selectedInterface] ?? (0, 0)
+            return (vals.0, vals.1)
+        }
+    }
+
+    func buildMenu() {
+        let menu = NSMenu()
+        
+        // Session Totals Info (Disabled item)
+        let sessionIn = previousBytesIn >= initialBytesIn ? previousBytesIn - initialBytesIn : 0
+        let sessionOut = previousBytesOut >= initialBytesOut ? previousBytesOut - initialBytesOut : 0
+        
+        let totalsTitle = "Session: \(formatData(sessionIn, rate: false)) down, \(formatData(sessionOut, rate: false)) up"
+        let totalsItem = NSMenuItem(title: totalsTitle, action: nil, keyEquivalent: "")
+        totalsItem.isEnabled = false
+        menu.addItem(totalsItem)
+        menu.addItem(NSMenuItem.separator())
+        
+        // Interface Selection
+        let interfaceItem = NSMenuItem(title: "Interface: \(selectedInterface)", action: nil, keyEquivalent: "")
+        let interfaceMenu = NSMenu()
+        
+        let allItem = NSMenuItem(title: "All", action: #selector(setInterface(_:)), keyEquivalent: "")
+        allItem.target = self
+        allItem.representedObject = "All"
+        allItem.state = selectedInterface == "All" ? .on : .off
+        interfaceMenu.addItem(allItem)
+        
+        for iface in availableInterfaces {
+            let item = NSMenuItem(title: iface, action: #selector(setInterface(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = iface
+            item.state = selectedInterface == iface ? .on : .off
+            interfaceMenu.addItem(item)
+        }
+        interfaceItem.submenu = interfaceMenu
+        menu.addItem(interfaceItem)
+        
+        // Settings Submenu
+        let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        let settingsMenu = NSMenu()
+        
+        // Interval submenu
+        let intervalMenuItem = NSMenuItem(title: "Update Interval", action: nil, keyEquivalent: "")
+        let intervalMenu = NSMenu()
+        let intervals: [(String, TimeInterval)] = [("0.5s", 0.5), ("1s", 1.0), ("2s", 2.0), ("5s", 5.0)]
+        for (title, value) in intervals {
+            let item = NSMenuItem(title: title, action: #selector(setInterval(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = value
+            item.state = (self.updateInterval == value) ? .on : .off
+            intervalMenu.addItem(item)
+        }
+        intervalMenuItem.submenu = intervalMenu
+        settingsMenu.addItem(intervalMenuItem)
+        
+        // Display Toggles
+        let bitsItem = NSMenuItem(title: "Show in Bits (Mbps)", action: #selector(toggleBits), keyEquivalent: "")
+        bitsItem.target = self; bitsItem.state = showInBits ? .on : .off
+        settingsMenu.addItem(bitsItem)
+        
+        let compactItem = NSMenuItem(title: "Compact Mode", action: #selector(toggleCompact), keyEquivalent: "")
+        compactItem.target = self; compactItem.state = compactMode ? .on : .off
+        settingsMenu.addItem(compactItem)
+        
+        let hideItem = NSMenuItem(title: "Hide when Inactive", action: #selector(toggleHide), keyEquivalent: "")
+        hideItem.target = self; hideItem.state = hideInactive ? .on : .off
+        settingsMenu.addItem(hideItem)
+        
+        settingsItem.submenu = settingsMenu
+        menu.addItem(settingsItem)
+        
+        // Auto Start Login
+        let autoStartItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        autoStartItem.target = self
+        autoStartItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(autoStartItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
+        let exitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
+        exitItem.target = self
+        menu.addItem(exitItem)
+        
+        statusItem?.menu = menu
+    }
+    
+    @objc func setInterface(_ sender: NSMenuItem) {
+        if let val = sender.representedObject as? String {
+            selectedInterface = val
+            // Reset counters
+            let stats = getNetworkStatsPerInterface()
+            let (totalIn, totalOut) = getAggregatedStats(stats)
+            self.previousBytesIn = totalIn
+            self.previousBytesOut = totalOut
+            self.initialBytesIn = totalIn
+            self.initialBytesOut = totalOut
+            updateNetworkStats()
+        }
+    }
+    @objc func setInterval(_ sender: NSMenuItem) { if let value = sender.representedObject as? TimeInterval { self.updateInterval = value } }
+    @objc func toggleBits() { showInBits.toggle() }
+    @objc func toggleCompact() { compactMode.toggle() }
+    @objc func toggleHide() { hideInactive.toggle() }
+    @objc func toggleLaunchAtLogin() {
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled { try service.unregister() } else { try service.register() }
+            buildMenu()
+        } catch { print("Failed to toggle launch at login: \(error)") }
+    }
+    @objc func quitApp() { NSApp.terminate(nil) }
+
+    func restartTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: self.updateInterval, repeats: true) { [weak self] _ in
+            self?.updateNetworkStats()
+        }
+        updateNetworkStats()
+    }
+
+    func updateNetworkStats() {
+        let stats = getNetworkStatsPerInterface()
+        // Update available interfaces if changed
+        let currentIfaces = Array(stats.keys).sorted()
+        if currentIfaces != availableInterfaces {
+            self.availableInterfaces = currentIfaces
+            buildMenu()
+        }
+        
+        let (bytesIn, bytesOut) = getAggregatedStats(stats)
+        
+        let diffIn = bytesIn >= previousBytesIn ? bytesIn - previousBytesIn : 0
+        let diffOut = bytesOut >= previousBytesOut ? bytesOut - previousBytesOut : 0
+        
+        self.previousBytesIn = bytesIn
+        self.previousBytesOut = bytesOut
+        
+        let speedIn = Double(diffIn) / self.updateInterval
+        let speedOut = Double(diffOut) / self.updateInterval
+        
+        if hideInactive && Int(speedIn) == 0 && Int(speedOut) == 0 {
+            let idleIcon = NSTextAttachment()
+            if let img = NSImage(systemSymbolName: "network", accessibilityDescription: nil) {
+                img.isTemplate = true
+                idleIcon.image = img
+                idleIcon.bounds = CGRect(x: 0, y: -2, width: 14, height: 14)
+                statusItem?.button?.attributedTitle = NSAttributedString(attachment: idleIcon)
+            } else {
+                statusItem?.button?.title = "Net"
+            }
+            return
+        }
+        
+        let inStr = formatData(UInt64(speedIn), rate: true)
+        let outStr = formatData(UInt64(speedOut), rate: true)
+        
+        let attrString = NSMutableAttributedString()
+        
+        // Colors
+        let inColor: NSColor = speedIn > 1024 * 1024 * 5 ? .systemGreen : .labelColor // Green if > 5MB/s
+        let outColor: NSColor = speedOut > 1024 * 1024 * 5 ? .systemOrange : .labelColor
+        
+        if compactMode {
+            attrString.append(NSAttributedString(string: "↓\(inStr) ", attributes: [.foregroundColor: inColor]))
+            attrString.append(NSAttributedString(string: "↑\(outStr)", attributes: [.foregroundColor: outColor]))
+        } else {
+            // Add SF symbols
+            if let downImg = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil) {
+                let attach = NSTextAttachment()
+                downImg.isTemplate = true
+                attach.image = downImg
+                attach.bounds = CGRect(x: 0, y: -2, width: 12, height: 12)
+                attrString.append(NSAttributedString(attachment: attach))
+                attrString.append(NSAttributedString(string: " ", attributes: [.foregroundColor: inColor]))
+            } else {
+                attrString.append(NSAttributedString(string: "↓", attributes: [.foregroundColor: inColor]))
+            }
+            attrString.append(NSAttributedString(string: "\(inStr)  ", attributes: [.foregroundColor: inColor]))
+            
+            if let upImg = NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: nil) {
+                let attach = NSTextAttachment()
+                upImg.isTemplate = true
+                attach.image = upImg
+                attach.bounds = CGRect(x: 0, y: -2, width: 12, height: 12)
+                attrString.append(NSAttributedString(attachment: attach))
+                attrString.append(NSAttributedString(string: " ", attributes: [.foregroundColor: outColor]))
+            } else {
+                attrString.append(NSAttributedString(string: "↑", attributes: [.foregroundColor: outColor]))
+            }
+            attrString.append(NSAttributedString(string: "\(outStr)", attributes: [.foregroundColor: outColor]))
+        }
+        
+        statusItem?.button?.attributedTitle = attrString
+        
+        // Update session totals in menu
+        if let totalsItem = statusItem?.menu?.items.first(where: { !$0.isEnabled && $0.title.hasPrefix("Session:") }) {
+            let sessionIn = previousBytesIn >= initialBytesIn ? previousBytesIn - initialBytesIn : 0
+            let sessionOut = previousBytesOut >= initialBytesOut ? previousBytesOut - initialBytesOut : 0
+            totalsItem.title = "Session: \(formatData(sessionIn, rate: false)) down, \(formatData(sessionOut, rate: false)) up"
+        }
+    }
+    
+    func formatData(_ bytes: UInt64, rate: Bool) -> String {
+        let value = showInBits ? Double(bytes) * 8 : Double(bytes)
+        let suffix = rate ? (showInBits ? "bps" : "B/s") : (showInBits ? "b" : "B")
+        
+        let kb = showInBits ? 1000.0 : 1024.0
+        let mb = kb * kb
+        let gb = mb * kb
+        
+        var formatted = ""
+        if value < kb {
+            formatted = compactMode ? "\(Int(value))" : "\(Int(value)) \(suffix)"
+        } else if value < mb {
+            let prefix = compactMode ? "K" : (showInBits ? "K" : "K")
+            formatted = String(format: "%.1f \(prefix)\(compactMode ? "" : suffix)", value / kb)
+        } else if value < gb {
+            let prefix = compactMode ? "M" : (showInBits ? "M" : "M")
+            formatted = String(format: "%.1f \(prefix)\(compactMode ? "" : suffix)", value / mb)
+        } else {
+            let prefix = compactMode ? "G" : (showInBits ? "G" : "G")
+            formatted = String(format: "%.2f \(prefix)\(compactMode ? "" : suffix)", value / gb)
+        }
+        return formatted
+    }
+
+    func getNetworkStatsPerInterface() -> [String: (UInt64, UInt64)] {
+        var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
+        var len: size_t = 0
+        if sysctl(&mib, 6, nil, &len, nil, 0) < 0 { return [:] }
+        
+        let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: len)
+        defer { buf.deallocate() }
+        if sysctl(&mib, 6, buf, &len, nil, 0) < 0 { return [:] }
+        
+        let lim = buf.advanced(by: len)
+        var next = buf
+        
+        var results: [String: (UInt64, UInt64)] = [:]
+        
+        while next < lim {
+            let ifm = next.withMemoryRebound(to: if_msghdr.self, capacity: 1) { $0.pointee }
+            if Int32(ifm.ifm_type) == RTM_IFINFO2 {
+                let if2m = next.withMemoryRebound(to: if_msghdr2.self, capacity: 1) { $0.pointee }
+                
+                let nameBuf = UnsafeMutablePointer<CChar>.allocate(capacity: 16)
+                if_indextoname(UInt32(ifm.ifm_index), nameBuf)
+                let name = String(cString: nameBuf)
+                nameBuf.deallocate()
+                
+                let inBytes = if2m.ifm_data.ifi_ibytes
+                let outBytes = if2m.ifm_data.ifi_obytes
+                
+                if !name.isEmpty {
+                    results[name] = (inBytes, outBytes)
+                }
+            }
+            next = next.advanced(by: Int(ifm.ifm_msglen))
+        }
+        return results
+    }
+}
