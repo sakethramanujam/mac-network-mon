@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import ServiceManagement
+import UserNotifications
 
 @main
 struct NetworkMonApp: App {
@@ -15,10 +16,15 @@ struct NetworkMonApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var timer: Timer?
+    var latencyTimer: Timer?
     
     // Total byte tracking for speed
     var previousBytesIn: UInt64 = 0
     var previousBytesOut: UInt64 = 0
+    
+    // Sparkline history
+    var historyIn: [Double] = Array(repeating: 0.0, count: 10)
+    var historyOut: [Double] = Array(repeating: 0.0, count: 10)
     
     // Session byte tracking
     var initialBytesIn: UInt64 = 0
@@ -56,6 +62,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         get { let v = UserDefaults.standard.double(forKey: "SpeedThreshold"); return v > 0 ? v : 5242880.0 }
         set { UserDefaults.standard.set(newValue, forKey: "SpeedThreshold"); buildMenu(); updateNetworkStats() }
     }
+    
+    var dataLimit: UInt64 {
+        get { UInt64(UserDefaults.standard.double(forKey: "DataLimit")) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "DataLimit"); buildMenu() }
+    }
 
     // Daily & Monthly tracking properties
     var dailyBytesIn: UInt64 {
@@ -86,6 +97,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     var localIP: String = "Fetching..."
     var publicIP: String = "Fetching..."
+    var currentLatency: String = "Measuring..."
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -177,6 +189,82 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }.resume()
     }
     
+    func measureLatency() {
+        guard let url = URL(string: "https://1.1.1.1") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 2.0
+        
+        let start = Date()
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, error in
+            DispatchQueue.main.async {
+                if error == nil {
+                    let ms = Int(Date().timeIntervalSince(start) * 1000)
+                    self?.currentLatency = "\(ms)ms"
+                } else {
+                    self?.currentLatency = "Timeout"
+                }
+                self?.buildMenu()
+            }
+        }.resume()
+    }
+    
+    @objc func runSpeedTest() {
+        guard let url = URL(string: "https://speed.cloudflare.com/__down?bytes=20000000") else { return }
+        let start = Date()
+        
+        let content = UNMutableNotificationContent()
+        content.title = "Speed Test Started"
+        content.body = "Downloading 20MB payload... Please wait."
+        let req = UNNotificationRequest(identifier: "SpeedTestStart", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+        
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                if let data = data, error == nil {
+                    let elapsed = Date().timeIntervalSince(start)
+                    let speedBytes = Double(data.count) / elapsed
+                    let speedStr = self?.formatData(UInt64(speedBytes), rate: true) ?? ""
+                    
+                    let doneContent = UNMutableNotificationContent()
+                    doneContent.title = "Speed Test Complete"
+                    doneContent.body = "Max Download Speed: \(speedStr)"
+                    let doneReq = UNNotificationRequest(identifier: "SpeedTestDone", content: doneContent, trigger: nil)
+                    UNUserNotificationCenter.current().add(doneReq)
+                }
+            }
+        }.resume()
+    }
+    
+    func generateSparkline(_ data: [Double]) -> String {
+        let blocks = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+        let maxVal = data.max() ?? 0
+        if maxVal == 0 { return String(repeating: " ", count: data.count) }
+        
+        var sparkline = ""
+        for value in data {
+            let ratio = value / maxVal
+            let index = Int(ratio * Double(blocks.count - 1))
+            let clampedIndex = max(0, min(blocks.count - 1, index))
+            sparkline.append(blocks[clampedIndex])
+        }
+        return sparkline
+    }
+    
+    func checkDataCap() {
+        if dataLimit > 0 && (dailyBytesIn + dailyBytesOut) > dataLimit {
+            let lastNotified = UserDefaults.standard.string(forKey: "LastDataLimitNotified") ?? ""
+            if lastNotified != currentDayString {
+                UserDefaults.standard.set(currentDayString, forKey: "LastDataLimitNotified")
+                let content = UNMutableNotificationContent()
+                content.title = "Data Limit Exceeded"
+                content.body = "You have exceeded your daily data limit of \(formatData(dataLimit, rate: false))."
+                let request = UNNotificationRequest(identifier: "DataLimit", content: content, trigger: nil)
+                UNUserNotificationCenter.current().add(request)
+            }
+        }
+    }
+    
     func getAggregatedStats(_ stats: [String: (UInt64, UInt64)]) -> (UInt64, UInt64) {
         if selectedInterface == "All" {
             var totalIn: UInt64 = 0
@@ -223,6 +311,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let publicIpItem = NSMenuItem(title: "Public IP: \(publicIP)", action: #selector(copyPublicIP), keyEquivalent: "")
         publicIpItem.target = self
         menu.addItem(publicIpItem)
+        
+        let latencyItem = NSMenuItem(title: "Latency (1.1.1.1): \(currentLatency)", action: nil, keyEquivalent: "")
+        latencyItem.isEnabled = false
+        menu.addItem(latencyItem)
         menu.addItem(NSMenuItem.separator())
         
         // Interface Selection
@@ -280,6 +372,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         thresholdsMenuItem.submenu = thresholdsMenu
         settingsMenu.addItem(thresholdsMenuItem)
         
+        // Data Limit submenu
+        let limitMenuItem = NSMenuItem(title: "Daily Data Limit", action: nil, keyEquivalent: "")
+        let limitMenu = NSMenu()
+        let limits: [(String, UInt64)] = [
+            ("Unlimited", 0),
+            ("1 GB", 1_073_741_824),
+            ("5 GB", 5_368_709_120),
+            ("10 GB", 10_737_418_240),
+            ("50 GB", 53_687_091_200)
+        ]
+        for (title, value) in limits {
+            let item = NSMenuItem(title: title, action: #selector(setDataLimit(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = value
+            item.state = (self.dataLimit == value) ? .on : .off
+            limitMenu.addItem(item)
+        }
+        limitMenuItem.submenu = limitMenu
+        settingsMenu.addItem(limitMenuItem)
+        
         // Display Toggles
         let bitsItem = NSMenuItem(title: "Show in Bits (Mbps)", action: #selector(toggleBits), keyEquivalent: "")
         bitsItem.target = self; bitsItem.state = showInBits ? .on : .off
@@ -296,13 +407,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.submenu = settingsMenu
         menu.addItem(settingsItem)
         
-        // Auto Start Login
         let autoStartItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         autoStartItem.target = self
         autoStartItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(autoStartItem)
         
         menu.addItem(NSMenuItem.separator())
+        
+        let speedTestItem = NSMenuItem(title: "Run Speed Test", action: #selector(runSpeedTest), keyEquivalent: "")
+        speedTestItem.target = self
+        menu.addItem(speedTestItem)
         
         let exitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         exitItem.target = self
@@ -326,6 +440,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func setInterval(_ sender: NSMenuItem) { if let value = sender.representedObject as? TimeInterval { self.updateInterval = value } }
     @objc func setThreshold(_ sender: NSMenuItem) { if let value = sender.representedObject as? Double { self.speedThreshold = value } }
+    @objc func setDataLimit(_ sender: NSMenuItem) {
+        if let value = sender.representedObject as? UInt64 {
+            dataLimit = value
+            if value > 0 {
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            }
+        }
+    }
     
     @objc func copyLocalIP() {
         let pb = NSPasteboard.general
@@ -356,6 +478,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateNetworkStats()
         }
         updateNetworkStats()
+        
+        latencyTimer?.invalidate()
+        latencyTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.measureLatency()
+        }
+        measureLatency()
     }
 
     func updateNetworkStats() {
@@ -384,6 +512,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let speedIn = Double(diffIn) / self.updateInterval
         let speedOut = Double(diffOut) / self.updateInterval
         
+        historyIn.removeFirst()
+        historyIn.append(speedIn)
+        historyOut.removeFirst()
+        historyOut.append(speedOut)
+        
+        checkDataCap()
+        
         if hideInactive && Int(speedIn) == 0 && Int(speedOut) == 0 {
             let idleIcon = NSTextAttachment()
             if let img = NSImage(systemSymbolName: "network", accessibilityDescription: nil) {
@@ -400,6 +535,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let inStr = formatData(UInt64(speedIn), rate: true)
         let outStr = formatData(UInt64(speedOut), rate: true)
         
+        let sparkIn = generateSparkline(historyIn)
+        let sparkOut = generateSparkline(historyOut)
+        
         let attrString = NSMutableAttributedString()
         
         // Colors
@@ -407,8 +545,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let outColor: NSColor = Double(speedOut) > speedThreshold ? .systemOrange : .labelColor
         
         if compactMode {
-            attrString.append(NSAttributedString(string: "↓\(inStr) ", attributes: [.foregroundColor: inColor]))
-            attrString.append(NSAttributedString(string: "↑\(outStr)", attributes: [.foregroundColor: outColor]))
+            attrString.append(NSAttributedString(string: "↓\(inStr) \(sparkIn) ", attributes: [.foregroundColor: inColor]))
+            attrString.append(NSAttributedString(string: "↑\(outStr) \(sparkOut)", attributes: [.foregroundColor: outColor]))
         } else {
             // Add SF symbols
             if let downImg = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil) {
@@ -421,7 +559,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 attrString.append(NSAttributedString(string: "↓", attributes: [.foregroundColor: inColor]))
             }
-            attrString.append(NSAttributedString(string: "\(inStr)  ", attributes: [.foregroundColor: inColor]))
+            attrString.append(NSAttributedString(string: "\(inStr) \(sparkIn)  ", attributes: [.foregroundColor: inColor]))
             
             if let upImg = NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: nil) {
                 let attach = NSTextAttachment()
@@ -433,7 +571,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 attrString.append(NSAttributedString(string: "↑", attributes: [.foregroundColor: outColor]))
             }
-            attrString.append(NSAttributedString(string: "\(outStr)", attributes: [.foregroundColor: outColor]))
+            attrString.append(NSAttributedString(string: "\(outStr) \(sparkOut)", attributes: [.foregroundColor: outColor]))
         }
         
         statusItem?.button?.attributedTitle = attrString
