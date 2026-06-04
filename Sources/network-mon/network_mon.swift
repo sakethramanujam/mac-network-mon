@@ -51,6 +51,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         get { UserDefaults.standard.string(forKey: "SelectedInterface") ?? "All" }
         set { UserDefaults.standard.set(newValue, forKey: "SelectedInterface"); buildMenu() }
     }
+    
+    var speedThreshold: Double {
+        get { let v = UserDefaults.standard.double(forKey: "SpeedThreshold"); return v > 0 ? v : 5242880.0 }
+        set { UserDefaults.standard.set(newValue, forKey: "SpeedThreshold"); buildMenu(); updateNetworkStats() }
+    }
+
+    // Daily & Monthly tracking properties
+    var dailyBytesIn: UInt64 {
+        get { UInt64(UserDefaults.standard.double(forKey: "DailyBytesIn")) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "DailyBytesIn") }
+    }
+    var dailyBytesOut: UInt64 {
+        get { UInt64(UserDefaults.standard.double(forKey: "DailyBytesOut")) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "DailyBytesOut") }
+    }
+    var monthlyBytesIn: UInt64 {
+        get { UInt64(UserDefaults.standard.double(forKey: "MonthlyBytesIn")) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "MonthlyBytesIn") }
+    }
+    var monthlyBytesOut: UInt64 {
+        get { UInt64(UserDefaults.standard.double(forKey: "MonthlyBytesOut")) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "MonthlyBytesOut") }
+    }
+    
+    var currentDayString: String {
+        get { UserDefaults.standard.string(forKey: "CurrentDayString") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "CurrentDayString") }
+    }
+    var currentMonthString: String {
+        get { UserDefaults.standard.string(forKey: "CurrentMonthString") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "CurrentMonthString") }
+    }
+
+    var localIP: String = "Fetching..."
+    var publicIP: String = "Fetching..."
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -67,8 +102,79 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.initialBytesIn = totalIn
         self.initialBytesOut = totalOut
 
+        checkDateRollover()
+        fetchLocalIP()
+        fetchPublicIP()
+
         buildMenu()
         restartTimer()
+    }
+    
+    func checkDateRollover() {
+        let formatter = DateFormatter()
+        
+        formatter.dateFormat = "yyyy-MM-dd"
+        let today = formatter.string(from: Date())
+        if today != currentDayString {
+            currentDayString = today
+            dailyBytesIn = 0
+            dailyBytesOut = 0
+        }
+        
+        formatter.dateFormat = "yyyy-MM"
+        let thisMonth = formatter.string(from: Date())
+        if thisMonth != currentMonthString {
+            currentMonthString = thisMonth
+            monthlyBytesIn = 0
+            monthlyBytesOut = 0
+        }
+    }
+
+    func fetchLocalIP() {
+        var address: String = "Unavailable"
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        if getifaddrs(&ifaddr) == 0 {
+            var ptr = ifaddr
+            while ptr != nil {
+                defer { ptr = ptr?.pointee.ifa_next }
+                let interface = ptr?.pointee
+                let addrFamily = interface?.ifa_addr.pointee.sa_family
+                if addrFamily == UInt8(AF_INET) || addrFamily == UInt8(AF_INET6) {
+                    let name = String(cString: (interface?.ifa_name)!)
+                    // Prioritize active Wi-Fi or Ethernet
+                    if name == "en0" || name == "en1" {
+                        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                        getnameinfo(interface?.ifa_addr, socklen_t((interface?.ifa_addr.pointee.sa_len)!),
+                                    &hostname, socklen_t(hostname.count),
+                                    nil, socklen_t(0), NI_NUMERICHOST)
+                        address = String(cString: hostname)
+                        break
+                    }
+                }
+            }
+            freeifaddrs(ifaddr)
+        }
+        DispatchQueue.main.async {
+            self.localIP = address
+            self.buildMenu()
+        }
+    }
+
+    func fetchPublicIP() {
+        guard let url = URL(string: "https://api.ipify.org") else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            if let data = data, let ip = String(data: data, encoding: .utf8) {
+                DispatchQueue.main.async {
+                    self?.publicIP = ip
+                    self?.buildMenu()
+                }
+            } else {
+                DispatchQueue.main.async {
+                    self?.publicIP = "Unavailable"
+                    self?.buildMenu()
+                }
+            }
+        }.resume()
     }
     
     func getAggregatedStats(_ stats: [String: (UInt64, UInt64)]) -> (UInt64, UInt64) {
@@ -93,10 +199,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sessionIn = previousBytesIn >= initialBytesIn ? previousBytesIn - initialBytesIn : 0
         let sessionOut = previousBytesOut >= initialBytesOut ? previousBytesOut - initialBytesOut : 0
         
-        let totalsTitle = "Session: \(formatData(sessionIn, rate: false)) down, \(formatData(sessionOut, rate: false)) up"
+        let totalsTitle = "Session: \(formatData(sessionIn, rate: false)) ↓, \(formatData(sessionOut, rate: false)) ↑"
         let totalsItem = NSMenuItem(title: totalsTitle, action: nil, keyEquivalent: "")
         totalsItem.isEnabled = false
         menu.addItem(totalsItem)
+        
+        let dailyTitle = "Today: \(formatData(dailyBytesIn, rate: false)) ↓, \(formatData(dailyBytesOut, rate: false)) ↑"
+        let dailyItem = NSMenuItem(title: dailyTitle, action: nil, keyEquivalent: "")
+        dailyItem.isEnabled = false
+        menu.addItem(dailyItem)
+        
+        let monthlyTitle = "This Month: \(formatData(monthlyBytesIn, rate: false)) ↓, \(formatData(monthlyBytesOut, rate: false)) ↑"
+        let monthlyItem = NSMenuItem(title: monthlyTitle, action: nil, keyEquivalent: "")
+        monthlyItem.isEnabled = false
+        menu.addItem(monthlyItem)
+        menu.addItem(NSMenuItem.separator())
+        
+        // IP Address Info
+        let localIpItem = NSMenuItem(title: "Local IP: \(localIP)", action: #selector(copyLocalIP), keyEquivalent: "")
+        localIpItem.target = self
+        menu.addItem(localIpItem)
+        
+        let publicIpItem = NSMenuItem(title: "Public IP: \(publicIP)", action: #selector(copyPublicIP), keyEquivalent: "")
+        publicIpItem.target = self
+        menu.addItem(publicIpItem)
         menu.addItem(NSMenuItem.separator())
         
         // Interface Selection
@@ -135,6 +261,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         intervalMenuItem.submenu = intervalMenu
         settingsMenu.addItem(intervalMenuItem)
+        
+        // Thresholds submenu
+        let thresholdsMenuItem = NSMenuItem(title: "Warning Threshold", action: nil, keyEquivalent: "")
+        let thresholdsMenu = NSMenu()
+        let thresholds: [(String, Double)] = [
+            ("1 MB/s", 1048576.0),
+            ("5 MB/s", 5242880.0),
+            ("10 MB/s", 10485760.0),
+            ("50 MB/s", 52428800.0)
+        ]
+        for (title, value) in thresholds {
+            let item = NSMenuItem(title: title, action: #selector(setThreshold(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = value
+            item.state = (self.speedThreshold == value) ? .on : .off
+            thresholdsMenu.addItem(item)
+        }
+        thresholdsMenuItem.submenu = thresholdsMenu
+        settingsMenu.addItem(thresholdsMenuItem)
         
         // Display Toggles
         let bitsItem = NSMenuItem(title: "Show in Bits (Mbps)", action: #selector(toggleBits), keyEquivalent: "")
@@ -181,6 +325,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     @objc func setInterval(_ sender: NSMenuItem) { if let value = sender.representedObject as? TimeInterval { self.updateInterval = value } }
+    @objc func setThreshold(_ sender: NSMenuItem) { if let value = sender.representedObject as? Double { self.speedThreshold = value } }
+    
+    @objc func copyLocalIP() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(localIP, forType: .string)
+    }
+    
+    @objc func copyPublicIP() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(publicIP, forType: .string)
+    }
     @objc func toggleBits() { showInBits.toggle() }
     @objc func toggleCompact() { compactMode.toggle() }
     @objc func toggleHide() { hideInactive.toggle() }
@@ -215,6 +372,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let diffIn = bytesIn >= previousBytesIn ? bytesIn - previousBytesIn : 0
         let diffOut = bytesOut >= previousBytesOut ? bytesOut - previousBytesOut : 0
         
+        checkDateRollover()
+        dailyBytesIn += diffIn
+        dailyBytesOut += diffOut
+        monthlyBytesIn += diffIn
+        monthlyBytesOut += diffOut
+        
         self.previousBytesIn = bytesIn
         self.previousBytesOut = bytesOut
         
@@ -240,8 +403,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let attrString = NSMutableAttributedString()
         
         // Colors
-        let inColor: NSColor = speedIn > 1024 * 1024 * 5 ? .systemGreen : .labelColor // Green if > 5MB/s
-        let outColor: NSColor = speedOut > 1024 * 1024 * 5 ? .systemOrange : .labelColor
+        let inColor: NSColor = Double(speedIn) > speedThreshold ? .systemGreen : .labelColor
+        let outColor: NSColor = Double(speedOut) > speedThreshold ? .systemOrange : .labelColor
         
         if compactMode {
             attrString.append(NSAttributedString(string: "↓\(inStr) ", attributes: [.foregroundColor: inColor]))
@@ -279,7 +442,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let totalsItem = statusItem?.menu?.items.first(where: { !$0.isEnabled && $0.title.hasPrefix("Session:") }) {
             let sessionIn = previousBytesIn >= initialBytesIn ? previousBytesIn - initialBytesIn : 0
             let sessionOut = previousBytesOut >= initialBytesOut ? previousBytesOut - initialBytesOut : 0
-            totalsItem.title = "Session: \(formatData(sessionIn, rate: false)) down, \(formatData(sessionOut, rate: false)) up"
+            totalsItem.title = "Session: \(formatData(sessionIn, rate: false)) ↓, \(formatData(sessionOut, rate: false)) ↑"
+        }
+        
+        if let dailyItem = statusItem?.menu?.items.first(where: { !$0.isEnabled && $0.title.hasPrefix("Today:") }) {
+            dailyItem.title = "Today: \(formatData(dailyBytesIn, rate: false)) ↓, \(formatData(dailyBytesOut, rate: false)) ↑"
+        }
+        
+        if let monthlyItem = statusItem?.menu?.items.first(where: { !$0.isEnabled && $0.title.hasPrefix("This Month:") }) {
+            monthlyItem.title = "This Month: \(formatData(monthlyBytesIn, rate: false)) ↓, \(formatData(monthlyBytesOut, rate: false)) ↑"
         }
     }
     
