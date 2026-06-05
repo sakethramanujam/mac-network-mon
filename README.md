@@ -7,6 +7,10 @@ A sleek, native macOS menu bar accessory that displays real-time network upload 
 ## Features
 
 - **Real-time Speeds**: View download (↓) and upload (↑) speeds calculated dynamically from macOS `sysctl` kernel APIs.
+- **Sparklines**: Visualize recent network activity directly in the menu bar and dropdown with dynamic sparkline charts.
+- **Latency Monitor**: Keep track of your connection quality with real-time ping latency measurements.
+- **Speed Test**: Run quick, on-demand speed tests from the dropdown menu to check your maximum bandwidth.
+- **Data Limits**: Set custom data usage limits and receive visual alerts when you approach or exceed them.
 - **SF Symbols**: Uses native Apple symbols for a clean and beautiful look in both light and dark mode.
 - **Dynamic Colors**: Numbers change color (Green/Orange) when data thresholds are exceeded.
 - **Interface Selection**: Choose to monitor all traffic, or isolate specific interfaces like Wi-Fi (`en0`) or loopback (`lo0`).
