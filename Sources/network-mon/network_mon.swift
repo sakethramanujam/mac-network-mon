@@ -53,6 +53,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         set { UserDefaults.standard.set(newValue, forKey: "HideInactive"); buildMenu(); updateNetworkStats() }
     }
     
+    var showSparklines: Bool {
+        get { UserDefaults.standard.object(forKey: "ShowSparklines") == nil ? true : UserDefaults.standard.bool(forKey: "ShowSparklines") }
+        set { UserDefaults.standard.set(newValue, forKey: "ShowSparklines"); buildMenu(); updateNetworkStats() }
+    }
+    
     var selectedInterface: String {
         get { UserDefaults.standard.string(forKey: "SelectedInterface") ?? "All" }
         set { UserDefaults.standard.set(newValue, forKey: "SelectedInterface"); buildMenu() }
@@ -160,6 +165,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                     &hostname, socklen_t(hostname.count),
                                     nil, socklen_t(0), NI_NUMERICHOST)
                         address = String(cString: hostname)
+                        if let percentIndex = address.firstIndex(of: "%") {
+                            address = String(address[..<percentIndex])
+                        }
                         break
                     }
                 }
@@ -400,6 +408,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         compactItem.target = self; compactItem.state = compactMode ? .on : .off
         settingsMenu.addItem(compactItem)
         
+        let sparklinesItem = NSMenuItem(title: "Show Sparklines", action: #selector(toggleSparklines), keyEquivalent: "")
+        sparklinesItem.target = self; sparklinesItem.state = showSparklines ? .on : .off
+        settingsMenu.addItem(sparklinesItem)
+        
         let hideItem = NSMenuItem(title: "Hide when Inactive", action: #selector(toggleHide), keyEquivalent: "")
         hideItem.target = self; hideItem.state = hideInactive ? .on : .off
         settingsMenu.addItem(hideItem)
@@ -462,6 +474,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func toggleBits() { showInBits.toggle() }
     @objc func toggleCompact() { compactMode.toggle() }
+    @objc func toggleSparklines() { showSparklines.toggle() }
     @objc func toggleHide() { hideInactive.toggle() }
     @objc func toggleLaunchAtLogin() {
         let service = SMAppService.mainApp
@@ -535,8 +548,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let inStr = formatData(UInt64(speedIn), rate: true)
         let outStr = formatData(UInt64(speedOut), rate: true)
         
-        let sparkIn = generateSparkline(historyIn)
-        let sparkOut = generateSparkline(historyOut)
+        let sparkIn = showSparklines ? " \(generateSparkline(historyIn))" : ""
+        let sparkOut = showSparklines ? " \(generateSparkline(historyOut))" : ""
         
         let attrString = NSMutableAttributedString()
         
@@ -545,8 +558,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let outColor: NSColor = Double(speedOut) > speedThreshold ? .systemOrange : .labelColor
         
         if compactMode {
-            attrString.append(NSAttributedString(string: "↓\(inStr) \(sparkIn) ", attributes: [.foregroundColor: inColor]))
-            attrString.append(NSAttributedString(string: "↑\(outStr) \(sparkOut)", attributes: [.foregroundColor: outColor]))
+            attrString.append(NSAttributedString(string: "↓\(inStr)\(sparkIn) ", attributes: [.foregroundColor: inColor]))
+            attrString.append(NSAttributedString(string: "↑\(outStr)\(sparkOut)", attributes: [.foregroundColor: outColor]))
         } else {
             // Add SF symbols
             if let downImg = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil) {
@@ -559,7 +572,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 attrString.append(NSAttributedString(string: "↓", attributes: [.foregroundColor: inColor]))
             }
-            attrString.append(NSAttributedString(string: "\(inStr) \(sparkIn)  ", attributes: [.foregroundColor: inColor]))
+            attrString.append(NSAttributedString(string: "\(inStr)\(sparkIn)  ", attributes: [.foregroundColor: inColor]))
             
             if let upImg = NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: nil) {
                 let attach = NSTextAttachment()
@@ -571,7 +584,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 attrString.append(NSAttributedString(string: "↑", attributes: [.foregroundColor: outColor]))
             }
-            attrString.append(NSAttributedString(string: "\(outStr) \(sparkOut)", attributes: [.foregroundColor: outColor]))
+            attrString.append(NSAttributedString(string: "\(outStr)\(sparkOut)", attributes: [.foregroundColor: outColor]))
         }
         
         statusItem?.button?.attributedTitle = attrString
