@@ -12,6 +12,7 @@ struct HistoryPopoverView: View {
             header
             qualitySection
             wifiSection
+            vpnSection
             chartSection
             totalsSection
             speedTestSection
@@ -26,7 +27,7 @@ struct HistoryPopoverView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("NetworkMon")
                     .font(.headline)
-                Text(model.selectedInterface == "All" ? "All interfaces" : model.selectedInterface)
+                Text(headerSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -64,6 +65,16 @@ struct HistoryPopoverView: View {
         }
     }
 
+    private var headerSubtitle: String {
+        if model.monitorVPNOnly {
+            return model.vpnActive ? "VPN only · \(model.tunnelInterfaces.joined(separator: ", "))" : "VPN only · no tunnel"
+        }
+        if model.selectedInterface == "All" {
+            return model.vpnActive ? "All interfaces · VPN on" : "All interfaces"
+        }
+        return model.selectedInterface
+    }
+
     private var wifiSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Divider()
@@ -78,6 +89,23 @@ struct HistoryPopoverView: View {
                 }
             }
             .font(.caption)
+        }
+    }
+
+    private var vpnSection: some View {
+        Group {
+            if model.vpnActive || model.monitorVPNOnly {
+                HStack {
+                    Image(systemName: model.vpnActive ? "lock.shield.fill" : "lock.shield")
+                        .foregroundStyle(model.vpnActive ? .green : .secondary)
+                    Text(model.vpnActive
+                         ? "VPN/tunnel: \(model.tunnelInterfaces.joined(separator: ", "))"
+                         : "No active tunnel interfaces")
+                    .lineLimit(2)
+                    Spacer()
+                }
+                .font(.caption)
+            }
         }
     }
 

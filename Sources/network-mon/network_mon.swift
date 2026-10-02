@@ -88,6 +88,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    var monitorVPNOnly: Bool {
+        get { UserDefaults.standard.bool(forKey: "MonitorVPNOnly") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "MonitorVPNOnly")
+            monitorModel.monitorVPNOnly = newValue
+            // Reset session counters when switching aggregation scope.
+            let stats = getNetworkStatsPerInterface()
+            let (totalIn, totalOut) = getAggregatedStats(stats)
+            previousBytesIn = totalIn
+            previousBytesOut = totalOut
+            initialBytesIn = totalIn
+            initialBytesOut = totalOut
+            monitorModel.clearChart()
+            buildMenu()
+            updateNetworkStats()
+        }
+    }
+
     var selectedInterface: String {
         get { UserDefaults.standard.string(forKey: "SelectedInterface") ?? "All" }
         set {
@@ -201,6 +219,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         monitorModel.selectedInterface = selectedInterface
         monitorModel.updateInterval = updateInterval
         monitorModel.latencyHost = latencyHost
+        monitorModel.monitorVPNOnly = monitorVPNOnly
 
         checkDateRollover()
         fetchLocalIP()
@@ -572,6 +591,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func getAggregatedStats(_ stats: [String: (UInt64, UInt64)]) -> (UInt64, UInt64) {
+        if monitorVPNOnly {
+            var totalIn: UInt64 = 0
+            var totalOut: UInt64 = 0
+            for (name, vals) in stats where TunnelDetect.isTunnelInterface(name) {
+                totalIn += vals.0
+                totalOut += vals.1
+            }
+            return (totalIn, totalOut)
+        }
         if selectedInterface == "All" {
             var totalIn: UInt64 = 0
             var totalOut: UInt64 = 0
@@ -634,6 +662,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         if monitorModel.wifi.connected || monitorModel.wifi.poweredOn {
             menu.addItem(disabledItem(monitorModel.wifi.summaryLine))
+        }
+        if monitorModel.vpnActive {
+            menu.addItem(disabledItem("VPN/tunnel: \(monitorModel.tunnelInterfaces.joined(separator: ", "))"))
+        } else if monitorVPNOnly {
+            menu.addItem(disabledItem("VPN/tunnel: none active"))
         }
         menu.addItem(.separator())
 
@@ -720,6 +753,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         hideItem.target = self
         hideItem.state = hideInactive ? .on : .off
         settingsMenu.addItem(hideItem)
+
+        let vpnOnlyItem = NSMenuItem(title: "Monitor VPN/Tunnel Only", action: #selector(toggleVPNOnly), keyEquivalent: "")
+        vpnOnlyItem.target = self
+        vpnOnlyItem.state = monitorVPNOnly ? .on : .off
+        settingsMenu.addItem(vpnOnlyItem)
 
         settingsItem.submenu = settingsMenu
         menu.addItem(settingsItem)
@@ -889,6 +927,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc func toggleBits() { showInBits.toggle() }
     @objc func toggleCompact() { compactMode.toggle() }
     @objc func toggleHide() { hideInactive.toggle() }
+    @objc func toggleVPNOnly() { monitorVPNOnly.toggle() }
 
     @objc func toggleLaunchAtLogin() {
         let service = SMAppService.mainApp
@@ -943,6 +982,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let currentIfaces = Array(stats.keys).sorted()
         if currentIfaces != availableInterfaces {
             availableInterfaces = currentIfaces
+            buildMenu()
+        }
+
+        let tunnels = TunnelDetect.tunnels(in: currentIfaces)
+        let vpnNow = !tunnels.isEmpty
+        if vpnNow != monitorModel.vpnActive || tunnels != monitorModel.tunnelInterfaces {
+            monitorModel.vpnActive = vpnNow
+            monitorModel.tunnelInterfaces = tunnels
             buildMenu()
         }
 

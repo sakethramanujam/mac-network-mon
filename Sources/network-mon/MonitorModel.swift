@@ -50,6 +50,9 @@ final class MonitorModel: ObservableObject {
     @Published var monthlyOut: UInt64 = 0
 
     @Published var wifi: WiFiStatus = .disconnected
+    @Published var vpnActive: Bool = false
+    @Published var tunnelInterfaces: [String] = []
+    @Published var monitorVPNOnly: Bool = false
 
     @Published var speedTestPhase: SpeedTestPhase = .idle
     @Published var lastDownloadResult: String?
