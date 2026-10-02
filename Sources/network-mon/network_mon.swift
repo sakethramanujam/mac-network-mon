@@ -135,6 +135,42 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    var billingCycleLimit: UInt64 {
+        get { UInt64Defaults.get("BillingCycleLimit") }
+        set {
+            UInt64Defaults.set(newValue, forKey: "BillingCycleLimit")
+            monitorModel.billingLimit = newValue
+            buildMenu()
+        }
+    }
+
+    var billingCycleStartDay: Int {
+        get {
+            let v = UserDefaults.standard.integer(forKey: "BillingCycleStartDay")
+            return (1...28).contains(v) ? v : 1
+        }
+        set {
+            let day = min(max(newValue, 1), 28)
+            UserDefaults.standard.set(day, forKey: "BillingCycleStartDay")
+            monitorModel.billingStartDay = day
+            checkDateRollover()
+            buildMenu()
+        }
+    }
+
+    var billingBytesIn: UInt64 {
+        get { UInt64Defaults.get("BillingBytesIn") }
+        set { UInt64Defaults.set(newValue, forKey: "BillingBytesIn") }
+    }
+    var billingBytesOut: UInt64 {
+        get { UInt64Defaults.get("BillingBytesOut") }
+        set { UInt64Defaults.set(newValue, forKey: "BillingBytesOut") }
+    }
+    var currentBillingPeriodKey: String {
+        get { UserDefaults.standard.string(forKey: "CurrentBillingPeriodKey") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "CurrentBillingPeriodKey") }
+    }
+
     var latencyHost: String {
         get {
             let stored = UserDefaults.standard.string(forKey: "LatencyHost")?
@@ -225,6 +261,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             monitorModel.chartRange = range
         }
         monitorModel.loadSpeedTestHistory()
+        monitorModel.billingLimit = billingCycleLimit
+        monitorModel.billingStartDay = billingCycleStartDay
 
         checkDateRollover()
         fetchLocalIP()
@@ -310,6 +348,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             currentMonthString = thisMonth
             monthlyBytesIn = 0
             monthlyBytesOut = 0
+        }
+
+        let billingKey = BillingCycle.periodKey(startDay: billingCycleStartDay)
+        if billingKey != currentBillingPeriodKey {
+            currentBillingPeriodKey = billingKey
+            billingBytesIn = 0
+            billingBytesOut = 0
+            UserDefaults.standard.removeObject(forKey: "LastBillingLimitNotified")
+            UserDefaults.standard.removeObject(forKey: "LastBillingWarnNotified")
         }
     }
 
@@ -584,16 +631,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func checkDataCap() {
-        guard dataLimit > 0, (dailyBytesIn + dailyBytesOut) > dataLimit else { return }
-        let lastNotified = UserDefaults.standard.string(forKey: "LastDataLimitNotified") ?? ""
-        guard lastNotified != currentDayString else { return }
+        if dataLimit > 0, (dailyBytesIn + dailyBytesOut) > dataLimit {
+            let lastNotified = UserDefaults.standard.string(forKey: "LastDataLimitNotified") ?? ""
+            if lastNotified != currentDayString {
+                UserDefaults.standard.set(currentDayString, forKey: "LastDataLimitNotified")
+                postNotification(
+                    id: "DataLimit",
+                    title: "Daily Data Limit Exceeded",
+                    body: "You have exceeded your daily data limit of \(formatData(dataLimit, rate: false))."
+                )
+            }
+        }
 
-        UserDefaults.standard.set(currentDayString, forKey: "LastDataLimitNotified")
-        postNotification(
-            id: "DataLimit",
-            title: "Data Limit Exceeded",
-            body: "You have exceeded your daily data limit of \(formatData(dataLimit, rate: false))."
-        )
+        let billingTotal = billingBytesIn + billingBytesOut
+        guard billingCycleLimit > 0 else { return }
+
+        let warnAt = UInt64(Double(billingCycleLimit) * 0.8)
+        if billingTotal >= warnAt, billingTotal <= billingCycleLimit {
+            let lastWarn = UserDefaults.standard.string(forKey: "LastBillingWarnNotified") ?? ""
+            if lastWarn != currentBillingPeriodKey {
+                UserDefaults.standard.set(currentBillingPeriodKey, forKey: "LastBillingWarnNotified")
+                postNotification(
+                    id: "BillingWarn",
+                    title: "Billing Cycle 80% Used",
+                    body: "You have used \(formatData(billingTotal, rate: false)) of \(formatData(billingCycleLimit, rate: false)) this cycle."
+                )
+            }
+        }
+
+        if billingTotal > billingCycleLimit {
+            let lastHit = UserDefaults.standard.string(forKey: "LastBillingLimitNotified") ?? ""
+            if lastHit != currentBillingPeriodKey {
+                UserDefaults.standard.set(currentBillingPeriodKey, forKey: "LastBillingLimitNotified")
+                postNotification(
+                    id: "BillingLimit",
+                    title: "Billing Cycle Limit Exceeded",
+                    body: "You have exceeded your billing-cycle limit of \(formatData(billingCycleLimit, rate: false))."
+                )
+            }
+        }
     }
 
     func getAggregatedStats(_ stats: [String: (UInt64, UInt64)]) -> (UInt64, UInt64) {
@@ -745,6 +821,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         limitMenuItem.submenu = limitMenu
         settingsMenu.addItem(limitMenuItem)
 
+        let billingLimitItem = NSMenuItem(title: "Billing Cycle Limit", action: nil, keyEquivalent: "")
+        let billingLimitMenu = NSMenu()
+        for (title, value) in limits {
+            let item = NSMenuItem(title: title, action: #selector(setBillingLimit(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = value
+            item.state = billingCycleLimit == value ? .on : .off
+            billingLimitMenu.addItem(item)
+        }
+        billingLimitItem.submenu = billingLimitMenu
+        settingsMenu.addItem(billingLimitItem)
+
+        let cycleDayItem = NSMenuItem(title: "Cycle Start Day: \(billingCycleStartDay)", action: nil, keyEquivalent: "")
+        let cycleDayMenu = NSMenu()
+        for day in [1, 5, 10, 15, 20, 25, 28] {
+            let item = NSMenuItem(title: "Day \(day)", action: #selector(setBillingStartDay(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = day
+            item.state = billingCycleStartDay == day ? .on : .off
+            cycleDayMenu.addItem(item)
+        }
+        cycleDayItem.submenu = cycleDayMenu
+        settingsMenu.addItem(cycleDayItem)
+
         let bitsItem = NSMenuItem(title: "Show in Bits (Mbps)", action: #selector(toggleBits), keyEquivalent: "")
         bitsItem.target = self
         bitsItem.state = showInBits ? .on : .off
@@ -815,6 +915,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         monitorModel.dailyOut = dailyBytesOut
         monitorModel.monthlyIn = monthlyBytesIn
         monitorModel.monthlyOut = monthlyBytesOut
+        monitorModel.billingIn = billingBytesIn
+        monitorModel.billingOut = billingBytesOut
+        monitorModel.billingLimit = billingCycleLimit
+        monitorModel.billingStartDay = billingCycleStartDay
 
         guard let items = statusMenu?.items else { return }
 
@@ -907,6 +1011,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if value > 0 {
                 UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
             }
+        }
+    }
+
+    @objc func setBillingLimit(_ sender: NSMenuItem) {
+        if let value = sender.representedObject as? UInt64 {
+            billingCycleLimit = value
+            if value > 0 {
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            }
+        }
+    }
+
+    @objc func setBillingStartDay(_ sender: NSMenuItem) {
+        if let day = sender.representedObject as? Int {
+            billingCycleStartDay = day
         }
     }
 
@@ -1009,6 +1128,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         dailyBytesOut += diffOut
         monthlyBytesIn += diffIn
         monthlyBytesOut += diffOut
+        billingBytesIn += diffIn
+        billingBytesOut += diffOut
 
         previousBytesIn = bytesIn
         previousBytesOut = bytesOut

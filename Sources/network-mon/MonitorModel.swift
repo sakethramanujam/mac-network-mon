@@ -83,6 +83,10 @@ final class MonitorModel: ObservableObject {
     @Published var dailyOut: UInt64 = 0
     @Published var monthlyIn: UInt64 = 0
     @Published var monthlyOut: UInt64 = 0
+    @Published var billingIn: UInt64 = 0
+    @Published var billingOut: UInt64 = 0
+    @Published var billingLimit: UInt64 = 0
+    @Published var billingStartDay: Int = 1
 
     @Published var wifi: WiFiStatus = .disconnected
     @Published var vpnActive: Bool = false

@@ -18,6 +18,17 @@ final class NetworkMonTests: XCTestCase {
         XCTAssertGreaterThan(stats.lossPercent, 40)
     }
 
+    func testBillingCyclePeriodKeyRollsBeforeStartDay() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let early = cal.date(from: DateComponents(year: 2026, month: 3, day: 3))!
+        let key = BillingCycle.periodKey(startDay: 15, now: early, calendar: cal)
+        XCTAssertEqual(key, "2026-02-15")
+
+        let late = cal.date(from: DateComponents(year: 2026, month: 3, day: 20))!
+        XCTAssertEqual(BillingCycle.periodKey(startDay: 15, now: late, calendar: cal), "2026-03-15")
+    }
+
     func testLatencyHostProbeURL() {
         XCTAssertEqual(LatencyHost.probeURL(for: "1.1.1.1")?.absoluteString, "https://1.1.1.1")
         XCTAssertEqual(LatencyHost.probeURL(for: "https://example.com/path")?.host, "example.com")

@@ -259,6 +259,12 @@ struct HistoryPopoverView: View {
             gridRow("Session", model.formatTotal(model.sessionIn), model.formatTotal(model.sessionOut))
             gridRow("Today", model.formatTotal(model.dailyIn), model.formatTotal(model.dailyOut))
             gridRow("Month", model.formatTotal(model.monthlyIn), model.formatTotal(model.monthlyOut))
+            if model.billingLimit > 0 {
+                gridRow("Cycle", model.formatTotal(model.billingIn), model.formatTotal(model.billingOut))
+                Text("Cycle day \(model.billingStartDay) · limit \(model.formatTotal(model.billingLimit))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 Text("Latency")
                     .foregroundStyle(.secondary)
