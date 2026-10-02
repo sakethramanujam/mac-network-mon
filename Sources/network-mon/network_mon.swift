@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CoreLocation
 import Darwin
 import Foundation
@@ -10,9 +11,21 @@ import UserNotifications
 @main
 struct NetworkMonApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @ObservedObject private var settings = SettingsStore.shared
+
     var body: some Scene {
         Settings {
-            EmptyView()
+            SettingsView(
+                store: settings,
+                onOpenAccessibility: {
+                    HotkeyAccessibility.requestTrustIfNeeded(prompt: true)
+                    HotkeyAccessibility.openSystemSettings()
+                },
+                onClearChartHistory: {
+                    ChartHistoryStore.clear()
+                    appDelegate.monitorModel.clearChart()
+                }
+            )
         }
     }
 }
@@ -37,7 +50,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
 
     var availableInterfaces: [String] = []
     private var latencyTask: URLSessionDataTask?
-    private var speedTestTask: URLSessionDataTask?
+    private let speedTester = SpeedTester()
+    private var globalKeyMonitor: Any?
+    private var settingsCancellables = Set<AnyCancellable>()
+    let settings = SettingsStore.shared
 
     var isSpeedTesting: Bool { monitorModel.isSpeedTesting }
 
@@ -314,6 +330,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
         monitorModel.loadSpeedTestHistory()
         monitorModel.billingLimit = billingCycleLimit
         monitorModel.billingStartDay = billingCycleStartDay
+        if settings.persistChartHistory {
+            let restored = ChartHistoryStore.load()
+            if !restored.isEmpty {
+                monitorModel.samples = restored
+                monitorModel.trimSamplesToRange()
+            }
+        }
 
         checkDateRollover()
         fetchLocalIP()
@@ -322,8 +345,55 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
         refreshWiFiInfo()
         installGraphHotkey()
 
+        settings.$updateInterval
+            .dropFirst()
+            .sink { [weak self] interval in
+                self?.monitorModel.updateInterval = interval
+                self?.restartTimer()
+                self?.buildMenu()
+            }
+            .store(in: &settingsCancellables)
+        settings.$trayPresetRaw
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.statusItem?.length = self?.statusItemLength ?? 148
+                self?.buildMenu()
+                self?.refreshMenuBarTitle()
+            }
+            .store(in: &settingsCancellables)
+        settings.$showInBits
+            .dropFirst()
+            .sink { [weak self] value in
+                self?.monitorModel.showInBits = value
+                self?.buildMenu()
+                self?.updateNetworkStats()
+            }
+            .store(in: &settingsCancellables)
+        settings.$latencyHost
+            .dropFirst()
+            .sink { [weak self] host in
+                self?.latencyHost = host
+            }
+            .store(in: &settingsCancellables)
+        settings.$monitorVPNOnly
+            .dropFirst()
+            .sink { [weak self] value in
+                self?.monitorVPNOnly = value
+            }
+            .store(in: &settingsCancellables)
+
         buildMenu()
         restartTimer()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        persistChartIfNeeded()
+        speedTester.cancel()
+    }
+
+    func persistChartIfNeeded() {
+        guard settings.persistChartHistory else { return }
+        ChartHistoryStore.save(monitorModel.samples)
     }
 
     private func setupPopover() {
@@ -546,7 +616,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
                     self.latencyProbes.removeFirst(self.latencyProbes.count - ConnectionQualityCalculator.windowSize)
                 }
 
-                let stats = ConnectionQualityCalculator.evaluate(self.latencyProbes)
+                let dnsMs: Double? = {
+                    let text = self.monitorModel.dnsLatencyText
+                    guard text.hasSuffix("ms"), let value = Double(text.dropLast(2)) else { return nil }
+                    return value
+                }()
+                let stats = ConnectionQualityCalculator.evaluate(
+                    self.latencyProbes,
+                    thresholds: self.settings.qualityThresholds,
+                    dnsLatencyMs: dnsMs,
+                    weighDNS: self.settings.weighDNSInQuality
+                )
                 self.monitorModel.applyLatencyStats(stats)
                 // Keep latest single-probe text until we have a stable average.
                 if stats.averageMs == nil {
@@ -565,7 +645,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
     }
 
     func measureDNSLatency() {
-        let host = UserDefaults.standard.string(forKey: "DNSLatencyHost") ?? "example.com"
+        let host = settings.dnsHost
         monitorModel.dnsHost = host
         let start = Date()
         DispatchQueue.global(qos: .utility).async {
@@ -594,15 +674,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
         }
     }
 
-    private var speedTestMeasID = ""
-
     @objc func runSpeedTest() {
         guard !isSpeedTesting else { return }
 
-        speedTestMeasID = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        guard let downloadURL = URL(string: "https://speed.cloudflare.com/__down?bytes=20000000&measId=\(speedTestMeasID)") else { return }
-
-        monitorModel.speedTestPhase = .download
         monitorModel.lastSpeedTestError = nil
         monitorModel.lastDownloadResult = nil
         monitorModel.lastUploadResult = nil
@@ -618,108 +692,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
             }
         }
 
-        var request = URLRequest(url: downloadURL)
-        request.timeoutInterval = 120
-        applyCloudflareHeaders(to: &request)
-
-        let downloadStart = Date()
-        speedTestTask = URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
-            DispatchQueue.main.async {
+        speedTester.run(
+            onPhase: { [weak self] phase in
+                self?.monitorModel.speedTestPhase = phase
+                self?.buildMenu()
+            },
+            completion: { [weak self] result in
                 guard let self else { return }
-
-                if let data, error == nil, !data.isEmpty {
-                    let elapsed = max(Date().timeIntervalSince(downloadStart), 0.001)
-                    let speedBytes = Double(data.count) / elapsed
-                    let speedStr = self.formatData(UInt64(speedBytes), rate: true)
-                    self.monitorModel.lastDownloadResult = speedStr
-                    self.startUploadSpeedTest()
-                } else {
-                    let message = error?.localizedDescription ?? "Download failed"
-                    self.finishSpeedTest(error: message)
+                self.monitorModel.speedTestPhase = .idle
+                self.buildMenu()
+                switch result {
+                case .success(let speeds):
+                    let down = self.formatData(UInt64(speeds.downloadBytesPerSecond), rate: true)
+                    let up = self.formatData(UInt64(speeds.uploadBytesPerSecond), rate: true)
+                    self.monitorModel.lastDownloadResult = down
+                    self.monitorModel.lastUploadResult = up
+                    self.monitorModel.recordSpeedTest(download: down, upload: up)
+                    self.postNotification(
+                        id: "SpeedTestDone",
+                        title: "Speed Test Complete",
+                        body: "↓ \(down)   ↑ \(up)"
+                    )
+                case .failure(let error):
+                    let message = error.localizedDescription
+                    self.monitorModel.lastSpeedTestError = message
+                    self.postNotification(id: "SpeedTestFailed", title: "Speed Test Failed", body: message)
                 }
             }
-        }
-        speedTestTask?.resume()
-    }
-
-    private func applyCloudflareHeaders(to request: inout URLRequest) {
-        request.setValue("https://speed.cloudflare.com", forHTTPHeaderField: "Origin")
-        request.setValue("https://speed.cloudflare.com/", forHTTPHeaderField: "Referer")
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X) NetworkMon/1.3",
-            forHTTPHeaderField: "User-Agent"
-        )
-    }
-
-    private func startUploadSpeedTest() {
-        guard let uploadURL = URL(string: "https://speed.cloudflare.com/__up?measId=\(speedTestMeasID)") else {
-            finishSpeedTest(error: "Invalid upload URL")
-            return
-        }
-
-        monitorModel.speedTestPhase = .upload
-        buildMenu()
-
-        let payloadSize = 10_000_000
-        var payload = Data(count: payloadSize)
-        payload.withUnsafeMutableBytes { rawBuffer in
-            if let base = rawBuffer.baseAddress {
-                arc4random_buf(base, payloadSize)
-            }
-        }
-
-        var request = URLRequest(url: uploadURL)
-        request.httpMethod = "POST"
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
-        request.httpBody = payload
-        applyCloudflareHeaders(to: &request)
-
-        let uploadStart = Date()
-        speedTestTask = URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
-            DispatchQueue.main.async {
-                guard let self else { return }
-
-                let status = (response as? HTTPURLResponse)?.statusCode
-                let ok: Bool = {
-                    if error != nil { return false }
-                    if let status { return (200...299).contains(status) }
-                    return true
-                }()
-                if ok {
-                    let elapsed = max(Date().timeIntervalSince(uploadStart), 0.001)
-                    let speedBytes = Double(payloadSize) / elapsed
-                    let speedStr = self.formatData(UInt64(speedBytes), rate: true)
-                    self.monitorModel.lastUploadResult = speedStr
-                    self.finishSpeedTest(error: nil)
-                } else {
-                    let message = error?.localizedDescription
-                        ?? "Upload failed (HTTP \(status ?? 0))"
-                    self.finishSpeedTest(error: message)
-                }
-            }
-        }
-        speedTestTask?.resume()
-    }
-
-    private func finishSpeedTest(error: String?) {
-        monitorModel.speedTestPhase = .idle
-        speedTestTask = nil
-        buildMenu()
-
-        if let error {
-            monitorModel.lastSpeedTestError = error
-            postNotification(id: "SpeedTestFailed", title: "Speed Test Failed", body: error)
-            return
-        }
-
-        let down = monitorModel.lastDownloadResult ?? "—"
-        let up = monitorModel.lastUploadResult ?? "—"
-        monitorModel.recordSpeedTest(download: down, upload: up)
-        postNotification(
-            id: "SpeedTestDone",
-            title: "Speed Test Complete",
-            body: "↓ \(down)   ↑ \(up)"
         )
     }
 
@@ -809,6 +808,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
         let graphItem = NSMenuItem(title: "Show Graph", action: #selector(showGraph), keyEquivalent: "g")
         graphItem.target = self
         menu.addItem(graphItem)
+
+        let prefsItem = NSMenuItem(title: "Settings…", action: #selector(openPreferences), keyEquivalent: ",")
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
+        if !HotkeyAccessibility.isTrusted {
+            let a11yItem = NSMenuItem(
+                title: "Enable Hotkey Accessibility…",
+                action: #selector(enableAccessibilityForHotkey),
+                keyEquivalent: ""
+            )
+            a11yItem.target = self
+            menu.addItem(a11yItem)
+        }
 
         let exportItem = NSMenuItem(title: "Export Usage CSV…", action: #selector(exportUsageCSV), keyEquivalent: "e")
         exportItem.target = self
@@ -1262,6 +1275,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
         }
+        if let globalKeyMonitor {
+            NSEvent.removeMonitor(globalKeyMonitor)
+        }
+
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // ⌃⌥N
             if event.modifierFlags.contains([.control, .option]),
@@ -1271,12 +1288,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
             }
             return event
         }
-        _ = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.modifierFlags.contains([.control, .option]),
-               event.charactersIgnoringModifiers?.lowercased() == "n" {
-                DispatchQueue.main.async { self?.showGraph() }
+
+        if HotkeyAccessibility.requestTrustIfNeeded(prompt: false) {
+            globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                if event.modifierFlags.contains([.control, .option]),
+                   event.charactersIgnoringModifiers?.lowercased() == "n" {
+                    DispatchQueue.main.async { self?.showGraph() }
+                }
             }
         }
+    }
+
+    @objc func openPreferences() {
+        NSApp.activate(ignoringOtherApps: true)
+        if #available(macOS 14.0, *) {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        } else {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
+    }
+
+    @objc func enableAccessibilityForHotkey() {
+        HotkeyAccessibility.requestTrustIfNeeded(prompt: true)
+        HotkeyAccessibility.openSystemSettings()
+        installGraphHotkey()
     }
 
     private func requestLocationForSSIDIfNeeded() {
@@ -1452,6 +1487,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocatio
         let speedOut = Double(diffOut) / updateInterval
 
         monitorModel.appendSample(download: speedIn, upload: speedOut)
+        if settings.persistChartHistory, Int(Date().timeIntervalSince1970) % 30 == 0 {
+            persistChartIfNeeded()
+        }
 
         checkDataCap()
         checkThresholdAlerts(speedIn: speedIn, speedOut: speedOut)

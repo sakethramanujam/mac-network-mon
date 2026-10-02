@@ -35,6 +35,17 @@ enum ConnectionQualityCalculator {
     static let minSamples = 3
     static let windowSize = 12
 
+    struct Thresholds: Equatable {
+        var goodLatencyMaxMs: Double = 50
+        var fairLatencyMaxMs: Double = 150
+        var goodJitterMaxMs: Double = 15
+        var fairJitterMaxMs: Double = 40
+        var goodLossMaxPercent: Double = 5
+        var fairLossMaxPercent: Double = 15
+
+        static let `default` = Thresholds()
+    }
+
     struct Stats: Equatable {
         var averageMs: Double?
         var jitterMs: Double?
@@ -43,7 +54,12 @@ enum ConnectionQualityCalculator {
         var sampleCount: Int
     }
 
-    static func evaluate(_ probes: [LatencyProbe]) -> Stats {
+    static func evaluate(
+        _ probes: [LatencyProbe],
+        thresholds: Thresholds = .default,
+        dnsLatencyMs: Double? = nil,
+        weighDNS: Bool = false
+    ) -> Stats {
         let recent = Array(probes.suffix(windowSize))
         guard !recent.isEmpty else {
             return Stats(averageMs: nil, jitterMs: nil, lossPercent: 0, quality: .unknown, sampleCount: 0)
@@ -62,13 +78,20 @@ enum ConnectionQualityCalculator {
             )
         }
 
-        let average = successes.reduce(0, +) / Double(successes.count)
+        var average = successes.reduce(0, +) / Double(successes.count)
+        if weighDNS, let dnsLatencyMs {
+            average = (average * 0.7) + (dnsLatencyMs * 0.3)
+        }
         let jitterMs = jitter(of: successes) ?? 0
 
         let quality: ConnectionQuality
-        if loss < 5, average < 50, jitterMs < 15 {
+        if loss < thresholds.goodLossMaxPercent,
+           average < thresholds.goodLatencyMaxMs,
+           jitterMs < thresholds.goodJitterMaxMs {
             quality = .good
-        } else if loss < 15, average < 150, jitterMs < 40 {
+        } else if loss < thresholds.fairLossMaxPercent,
+                  average < thresholds.fairLatencyMaxMs,
+                  jitterMs < thresholds.fairJitterMaxMs {
             quality = .fair
         } else {
             quality = .poor

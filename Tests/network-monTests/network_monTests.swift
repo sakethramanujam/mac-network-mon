@@ -10,6 +10,26 @@ final class NetworkMonTests: XCTestCase {
         XCTAssertEqual(stats.lossPercent, 0, accuracy: 0.01)
     }
 
+    func testConnectionQualityRespectsCustomThresholds() {
+        let probes = (0..<6).map { _ in LatencyProbe(rttMs: 80) }
+        let strict = ConnectionQualityCalculator.Thresholds(goodLatencyMaxMs: 40, fairLatencyMaxMs: 60)
+        let stats = ConnectionQualityCalculator.evaluate(probes, thresholds: strict)
+        XCTAssertEqual(stats.quality, .poor)
+    }
+
+    func testConnectionQualityWeighsDNS() {
+        let probes = (0..<6).map { _ in LatencyProbe(rttMs: 20) }
+        let stats = ConnectionQualityCalculator.evaluate(
+            probes,
+            thresholds: .default,
+            dnsLatencyMs: 200,
+            weighDNS: true
+        )
+        // 0.7*20 + 0.3*200 = 74 → fair with defaults
+        XCTAssertEqual(stats.quality, .fair)
+        XCTAssertEqual(stats.averageMs ?? 0, 74, accuracy: 0.1)
+    }
+
     func testConnectionQualityPoorOnLoss() {
         var probes: [LatencyProbe] = (0..<4).map { _ in LatencyProbe(rttMs: 30) }
         probes.append(contentsOf: (0..<4).map { _ in LatencyProbe(rttMs: nil) })
