@@ -45,11 +45,23 @@ This project is a Swift Package. You must be on macOS 13+.
 ## Development
 
 ```bash
-swift test
+# Needs full Xcode (not Command Line Tools only) for XCTest:
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ./build.sh
 ```
 
+Settings: right-click menu → **Settings…** (or ⌘,) for quality thresholds, DNS host, tray layout, chart persistence, and Accessibility for the global hotkey.
+
+Notarization (Developer ID): see [`docs/NOTARIZATION.md`](docs/NOTARIZATION.md) and `./notarize.sh`.
+
+Per-app top talkers: see [`docs/TOP_TALKERS.md`](docs/TOP_TALKERS.md).
+
 ## Releases
+
+### v1.5.0
+- App icon, SwiftUI Settings window, tunable quality thresholds (+ optional DNS weight).
+- Persist chart history across launches; Accessibility guidance for ⌃⌥N.
+- Extract `SettingsStore`, `SpeedTester`, `ChartHistoryStore`; notarization scripts/docs.
 
 ### v1.4.0
 - VPN/tunnel detection, chart ranges, speed-test history, billing-cycle caps.
