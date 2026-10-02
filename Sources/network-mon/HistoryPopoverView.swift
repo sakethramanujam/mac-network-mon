@@ -328,6 +328,26 @@ struct HistoryPopoverView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+
+            if !model.speedTestHistory.isEmpty {
+                Text("Recent")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                ForEach(model.speedTestHistory.prefix(5)) { record in
+                    HStack {
+                        Text(record.date, style: .relative)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 72, alignment: .leading)
+                        Text("↓ \(record.download)")
+                            .foregroundStyle(.green)
+                        Text("↑ \(record.upload)")
+                            .foregroundStyle(.orange)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.caption2)
+                    .monospacedDigit()
+                }
+            }
         }
     }
 

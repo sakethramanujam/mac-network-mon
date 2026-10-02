@@ -22,6 +22,20 @@ enum SpeedTestPhase: Equatable {
     case upload
 }
 
+struct SpeedTestRecord: Identifiable, Codable, Equatable {
+    let id: UUID
+    let date: Date
+    let download: String
+    let upload: String
+
+    init(id: UUID = UUID(), date: Date = Date(), download: String, upload: String) {
+        self.id = id
+        self.date = date
+        self.download = download
+        self.upload = upload
+    }
+}
+
 enum ChartTimeRange: Double, CaseIterable, Identifiable {
     case oneMinute = 60
     case fiveMinutes = 300
@@ -79,8 +93,35 @@ final class MonitorModel: ObservableObject {
     @Published var lastDownloadResult: String?
     @Published var lastUploadResult: String?
     @Published var lastSpeedTestError: String?
+    @Published var speedTestHistory: [SpeedTestRecord] = []
 
     var isSpeedTesting: Bool { speedTestPhase != .idle }
+
+    static let speedTestHistoryKey = "SpeedTestHistory"
+    static let speedTestHistoryLimit = 8
+
+    func loadSpeedTestHistory() {
+        guard let data = UserDefaults.standard.data(forKey: Self.speedTestHistoryKey),
+              let decoded = try? JSONDecoder().decode([SpeedTestRecord].self, from: data) else {
+            speedTestHistory = []
+            return
+        }
+        speedTestHistory = decoded
+    }
+
+    func recordSpeedTest(download: String, upload: String) {
+        lastDownloadResult = download
+        lastUploadResult = upload
+        var next = speedTestHistory
+        next.insert(SpeedTestRecord(download: download, upload: upload), at: 0)
+        if next.count > Self.speedTestHistoryLimit {
+            next = Array(next.prefix(Self.speedTestHistoryLimit))
+        }
+        speedTestHistory = next
+        if let data = try? JSONEncoder().encode(next) {
+            UserDefaults.standard.set(data, forKey: Self.speedTestHistoryKey)
+        }
+    }
 
     var chartCapacity: Int {
         let interval = max(updateInterval, 0.5)

@@ -224,6 +224,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
            let range = ChartTimeRange(rawValue: raw) {
             monitorModel.chartRange = range
         }
+        monitorModel.loadSpeedTestHistory()
 
         checkDateRollover()
         fetchLocalIP()
@@ -566,6 +567,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let down = monitorModel.lastDownloadResult ?? "—"
         let up = monitorModel.lastUploadResult ?? "—"
+        monitorModel.recordSpeedTest(download: down, upload: up)
         postNotification(
             id: "SpeedTestDone",
             title: "Speed Test Complete",
