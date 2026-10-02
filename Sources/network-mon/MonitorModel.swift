@@ -22,11 +22,32 @@ enum SpeedTestPhase: Equatable {
     case upload
 }
 
+enum ChartTimeRange: Double, CaseIterable, Identifiable {
+    case oneMinute = 60
+    case fiveMinutes = 300
+    case fifteenMinutes = 900
+    case sixtyMinutes = 3600
+
+    var id: Double { rawValue }
+
+    var title: String {
+        switch self {
+        case .oneMinute: return "1m"
+        case .fiveMinutes: return "5m"
+        case .fifteenMinutes: return "15m"
+        case .sixtyMinutes: return "60m"
+        }
+    }
+}
+
 /// Live state shared between the menu-bar controller and the SwiftUI popover.
 final class MonitorModel: ObservableObject {
-    static let chartCapacity = 120
+    /// Hard cap so a 0.5s interval over 60m cannot unbounded-grow memory.
+    static let absoluteMaxSamples = 7200
 
     @Published var samples: [SpeedSample] = []
+    @Published var chartRange: ChartTimeRange = .oneMinute
+    @Published var chartPaused: Bool = false
     @Published var currentDownload: Double = 0
     @Published var currentUpload: Double = 0
     @Published var latencyText: String = "Measuring…"
@@ -61,6 +82,12 @@ final class MonitorModel: ObservableObject {
 
     var isSpeedTesting: Bool { speedTestPhase != .idle }
 
+    var chartCapacity: Int {
+        let interval = max(updateInterval, 0.5)
+        let needed = Int(ceil(chartRange.rawValue / interval)) + 2
+        return min(max(needed, 30), Self.absoluteMaxSamples)
+    }
+
     var qualityColor: NSColor {
         switch quality {
         case .unknown: return .secondaryLabelColor
@@ -73,9 +100,18 @@ final class MonitorModel: ObservableObject {
     func appendSample(download: Double, upload: Double) {
         currentDownload = download
         currentUpload = upload
+        guard !chartPaused else { return }
         samples.append(SpeedSample(download: download, upload: upload))
-        if samples.count > Self.chartCapacity {
-            samples.removeFirst(samples.count - Self.chartCapacity)
+        let capacity = chartCapacity
+        if samples.count > capacity {
+            samples.removeFirst(samples.count - capacity)
+        }
+    }
+
+    func trimSamplesToRange() {
+        let capacity = chartCapacity
+        if samples.count > capacity {
+            samples.removeFirst(samples.count - capacity)
         }
     }
 

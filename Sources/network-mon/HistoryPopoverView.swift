@@ -131,7 +131,7 @@ struct HistoryPopoverView: View {
 
     /// Seconds from the newest sample (0 = newest). Negative values are older.
     private var chartWindowSeconds: Double {
-        Double(MonitorModel.chartCapacity) * max(model.updateInterval, 0.5)
+        model.chartRange.rawValue
     }
 
     private var chartAnchor: Date {
@@ -159,6 +159,26 @@ struct HistoryPopoverView: View {
 
     private var chartSection: some View {
         VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Picker("Range", selection: $model.chartRange) {
+                    ForEach(ChartTimeRange.allCases) { range in
+                        Text(range.title).tag(range)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .onChange(of: model.chartRange) { newValue in
+                    model.trimSamplesToRange()
+                    UserDefaults.standard.set(newValue.rawValue, forKey: "ChartTimeRange")
+                }
+
+                Button(model.chartPaused ? "Resume" : "Pause") {
+                    model.chartPaused.toggle()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+            }
+
             Text(chartCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -225,11 +245,12 @@ struct HistoryPopoverView: View {
     }
 
     private var chartCaption: String {
+        let paused = model.chartPaused ? " · paused" : ""
         let minutes = chartWindowSeconds / 60
         if minutes >= 1.5 {
-            return String(format: "Last %.0f min (relative)", minutes)
+            return String(format: "Last %.0f min (relative)%@", minutes, paused)
         }
-        return String(format: "Last %.0f sec (relative)", chartWindowSeconds)
+        return String(format: "Last %.0f sec (relative)%@", chartWindowSeconds, paused)
     }
 
     private var totalsSection: some View {

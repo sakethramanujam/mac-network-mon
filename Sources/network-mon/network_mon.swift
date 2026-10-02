@@ -220,6 +220,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         monitorModel.updateInterval = updateInterval
         monitorModel.latencyHost = latencyHost
         monitorModel.monitorVPNOnly = monitorVPNOnly
+        if let raw = UserDefaults.standard.object(forKey: "ChartTimeRange") as? Double,
+           let range = ChartTimeRange(rawValue: raw) {
+            monitorModel.chartRange = range
+        }
 
         checkDateRollover()
         fetchLocalIP()
