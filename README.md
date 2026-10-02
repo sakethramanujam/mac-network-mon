@@ -8,11 +8,15 @@ A sleek, native macOS menu bar accessory that displays real-time network upload 
 
 - **Real-time Speeds**: View download (↓) and upload (↑) speeds calculated dynamically from macOS `sysctl` kernel APIs.
 - **Latency Monitor**: Probe a configurable HTTPS host (Cloudflare DNS by default) and track latency, jitter, and loss.
+- **DNS Latency**: Resolve a hostname periodically as a second quality signal.
 - **Connection Quality**: Good / Fair / Poor badge in the menu bar and popover from recent latency samples.
 - **Wi‑Fi Details**: RSSI and TX rate in the popover (SSID when Location access allows it).
-- **Speed Test**: Run on-demand download + upload tests (Cloudflare) from the menu or graph popover.
-- **Live Graph**: Left-click the menu bar item for a SwiftUI chart of recent download/upload history (right-click for the full menu).
-- **Data Limits**: Set custom data usage limits and receive visual alerts when you approach or exceed them.
+- **VPN/Tunnel Awareness**: Detect utun/ipsec/ppp/wg interfaces; optional VPN-only monitoring.
+- **Speed Test**: Run on-demand download + upload tests (Cloudflare) with recent history in the popover.
+- **Live Graph**: Left-click for a SwiftUI chart with 1/5/15/60 minute ranges and pause/resume (⌃⌥N hotkey).
+- **Interface Breakdown**: Rank interfaces by current throughput (best-effort top talkers inside the sandbox).
+- **Data Limits**: Daily and billing-cycle caps with 80% warnings; export usage CSV.
+- **IPv4 + IPv6**: Show public addresses; refresh on demand.
 - **SF Symbols**: Uses native Apple symbols for a clean and beautiful look in both light and dark mode.
 - **Dynamic Colors**: Numbers change color (Green/Orange) when data thresholds are exceeded.
 - **Interface Selection**: Choose to monitor all traffic, or isolate specific interfaces like Wi-Fi (`en0`) or loopback (`lo0`).
@@ -46,6 +50,11 @@ swift test
 ```
 
 ## Releases
+
+### v1.4.0
+- VPN/tunnel detection, chart ranges, speed-test history, billing-cycle caps.
+- Per-interface rates, DNS latency, threshold alerts, CSV export, public IPv6.
+- Reset counters, tray presets, ⌃⌥N hotkey, Location for SSID, String Catalog scaffolding.
 
 ### v1.3.0
 - Connection quality badge (latency + jitter + loss).
