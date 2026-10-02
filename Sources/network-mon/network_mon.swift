@@ -1,8 +1,10 @@
 import AppKit
+import CoreLocation
 import Darwin
 import Foundation
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 import UserNotifications
 
 @main
@@ -15,7 +17,7 @@ struct NetworkMonApp: App {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, CLLocationManagerDelegate {
     var statusItem: NSStatusItem?
     var timer: Timer?
     var latencyTimer: Timer?
@@ -43,7 +45,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     /// Fixed menu-bar width so neighboring items do not jump as rates change.
     /// Fits quality glyph + `↓999.9M ↑999.9M` in 11pt monospaced digits.
-    private let statusItemLength: CGFloat = 148
+    private var statusItemLength: CGFloat {
+        switch trayPreset {
+        case .rates: return 148
+        case .downOnly, .upOnly: return 96
+        case .qualityOnly: return 36
+        }
+    }
 
     private var latencyProbes: [LatencyProbe] = []
     private var wifiTimer: Timer?
@@ -51,6 +59,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var lowSpeedStreak: TimeInterval = 0
     private var lastHighSpeedNotify: Date?
     private var lastLowSpeedNotify: Date?
+    private var keyMonitor: Any?
+    private lazy var locationManager: CLLocationManager = {
+        let manager = CLLocationManager()
+        manager.delegate = self
+        return manager
+    }()
+    var publicIPv6: String = "—"
+
+    enum TrayPreset: String {
+        case rates
+        case downOnly
+        case upOnly
+        case qualityOnly
+    }
+
+    var trayPreset: TrayPreset {
+        get { TrayPreset(rawValue: UserDefaults.standard.string(forKey: "TrayPreset") ?? "") ?? .rates }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: "TrayPreset")
+            statusItem?.length = statusItemLength
+            buildMenu()
+            refreshMenuBarTitle()
+        }
+    }
 
     var updateInterval: TimeInterval {
         get {
@@ -250,6 +282,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         statusItem = NSStatusBar.system.statusItem(withLength: statusItemLength)
+        requestLocationForSSIDIfNeeded()
         if let button = statusItem?.button {
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 11.0, weight: .regular)
             button.target = self
@@ -285,7 +318,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         checkDateRollover()
         fetchLocalIP()
         fetchPublicIP()
+        fetchPublicIPv6()
         refreshWiFiInfo()
+        installGraphHotkey()
 
         buildMenu()
         restartTimer()
@@ -448,6 +483,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             DispatchQueue.main.async {
                 self?.publicIP = ip
                 self?.monitorModel.publicIP = ip
+                self?.refreshInfoMenuItems()
+            }
+        }.resume()
+    }
+
+    func fetchPublicIPv6() {
+        guard let url = URL(string: "https://api64.ipify.org") else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            let ip: String
+            if let data, let text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty, text.contains(":") {
+                ip = text
+            } else {
+                ip = "Unavailable"
+            }
+            DispatchQueue.main.async {
+                self?.publicIPv6 = ip
+                self?.monitorModel.publicIPv6 = ip
                 self?.refreshInfoMenuItems()
             }
         }.resume()
@@ -756,15 +809,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let graphItem = NSMenuItem(title: "Show Graph", action: #selector(showGraph), keyEquivalent: "g")
         graphItem.target = self
         menu.addItem(graphItem)
+
+        let exportItem = NSMenuItem(title: "Export Usage CSV…", action: #selector(exportUsageCSV), keyEquivalent: "e")
+        exportItem.target = self
+        menu.addItem(exportItem)
+
+        let resetItem = NSMenuItem(title: "Reset Counters", action: nil, keyEquivalent: "")
+        let resetMenu = NSMenu()
+        let resetSession = NSMenuItem(title: "Reset Session", action: #selector(resetSessionCounters), keyEquivalent: "")
+        resetSession.target = self
+        resetMenu.addItem(resetSession)
+        let resetToday = NSMenuItem(title: "Reset Today", action: #selector(resetTodayCounters), keyEquivalent: "")
+        resetToday.target = self
+        resetMenu.addItem(resetToday)
+        resetItem.submenu = resetMenu
+        menu.addItem(resetItem)
         menu.addItem(.separator())
 
         let localIpItem = NSMenuItem(title: "Local IP: \(localIP)", action: #selector(copyLocalIP), keyEquivalent: "")
         localIpItem.target = self
         menu.addItem(localIpItem)
 
-        let publicIpItem = NSMenuItem(title: "Public IP: \(publicIP)", action: #selector(copyPublicIP), keyEquivalent: "")
+        let publicIpItem = NSMenuItem(title: "Public IPv4: \(publicIP)", action: #selector(copyPublicIP), keyEquivalent: "")
         publicIpItem.target = self
         menu.addItem(publicIpItem)
+
+        let publicIp6Item = NSMenuItem(title: "Public IPv6: \(publicIPv6)", action: #selector(copyPublicIPv6), keyEquivalent: "")
+        publicIp6Item.target = self
+        menu.addItem(publicIp6Item)
 
         let refreshIPItem = NSMenuItem(title: "Refresh IPs", action: #selector(refreshIPs), keyEquivalent: "r")
         refreshIPItem.target = self
@@ -918,6 +990,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         alertItem.state = thresholdAlertsEnabled ? .on : .off
         settingsMenu.addItem(alertItem)
 
+        let trayItem = NSMenuItem(title: "Tray Layout", action: nil, keyEquivalent: "")
+        let trayMenu = NSMenu()
+        let trayOptions: [(String, TrayPreset)] = [
+            ("Quality + Rates", .rates),
+            ("Download Only", .downOnly),
+            ("Upload Only", .upOnly),
+            ("Quality Dot Only", .qualityOnly)
+        ]
+        for (title, preset) in trayOptions {
+            let item = NSMenuItem(title: title, action: #selector(setTrayPreset(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = preset.rawValue
+            item.state = trayPreset == preset ? .on : .off
+            trayMenu.addItem(item)
+        }
+        trayItem.submenu = trayMenu
+        settingsMenu.addItem(trayItem)
+
         settingsItem.submenu = settingsMenu
         menu.addItem(settingsItem)
 
@@ -984,8 +1074,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 item.title = "This Month: \(formatData(monthlyBytesIn, rate: false)) ↓, \(formatData(monthlyBytesOut, rate: false)) ↑"
             } else if item.title.hasPrefix("Local IP:") {
                 item.title = "Local IP: \(localIP)"
-            } else if item.title.hasPrefix("Public IP:") {
-                item.title = "Public IP: \(publicIP)"
+            } else if item.title.hasPrefix("Public IPv4:") {
+                item.title = "Public IPv4: \(publicIP)"
+            } else if item.title.hasPrefix("Public IPv6:") {
+                item.title = "Public IPv6: \(publicIPv6)"
             } else if item.title.hasPrefix("Quality:") {
                 item.title = "Quality: \(monitorModel.quality.title)  ·  \(currentLatency)  ·  j\(monitorModel.jitterText)  ·  loss \(monitorModel.lossText)"
             } else if item.title.hasPrefix("Latency Host:") {
@@ -1092,14 +1184,115 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSPasteboard.general.setString(publicIP, forType: .string)
     }
 
+    @objc func copyPublicIPv6() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(publicIPv6, forType: .string)
+    }
+
     @objc func refreshIPs() {
         localIP = "Fetching…"
         publicIP = "Fetching…"
+        publicIPv6 = "Fetching…"
         monitorModel.localIP = localIP
         monitorModel.publicIP = publicIP
+        monitorModel.publicIPv6 = publicIPv6
         refreshInfoMenuItems()
         fetchLocalIP()
         fetchPublicIP()
+        fetchPublicIPv6()
+        requestLocationForSSIDIfNeeded()
+        refreshWiFiInfo()
+    }
+
+    @objc func exportUsageCSV() {
+        let csv = UsageExport.csv(
+            sessionIn: sessionTotals().0,
+            sessionOut: sessionTotals().1,
+            dailyIn: dailyBytesIn,
+            dailyOut: dailyBytesOut,
+            monthlyIn: monthlyBytesIn,
+            monthlyOut: monthlyBytesOut,
+            billingIn: billingBytesIn,
+            billingOut: billingBytesOut,
+            billingPeriod: currentBillingPeriodKey
+        )
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.nameFieldStringValue = "networkmon-usage.csv"
+        panel.canCreateDirectories = true
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try csv.data(using: .utf8)?.write(to: url, options: .atomic)
+            } catch {
+                let alert = NSAlert(error: error)
+                alert.runModal()
+            }
+        }
+    }
+
+    @objc func resetSessionCounters() {
+        let stats = getNetworkStatsPerInterface()
+        let (totalIn, totalOut) = getAggregatedStats(stats)
+        previousBytesIn = totalIn
+        previousBytesOut = totalOut
+        initialBytesIn = totalIn
+        initialBytesOut = totalOut
+        monitorModel.clearChart()
+        refreshInfoMenuItems()
+        refreshMenuBarTitle()
+    }
+
+    @objc func resetTodayCounters() {
+        dailyBytesIn = 0
+        dailyBytesOut = 0
+        UserDefaults.standard.removeObject(forKey: "LastDataLimitNotified")
+        refreshInfoMenuItems()
+    }
+
+    @objc func setTrayPreset(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let preset = TrayPreset(rawValue: raw) else { return }
+        trayPreset = preset
+    }
+
+    private func installGraphHotkey() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // ⌃⌥N
+            if event.modifierFlags.contains([.control, .option]),
+               event.charactersIgnoringModifiers?.lowercased() == "n" {
+                self?.showGraph()
+                return nil
+            }
+            return event
+        }
+        _ = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.modifierFlags.contains([.control, .option]),
+               event.charactersIgnoringModifiers?.lowercased() == "n" {
+                DispatchQueue.main.async { self?.showGraph() }
+            }
+        }
+    }
+
+    private func requestLocationForSSIDIfNeeded() {
+        let status = locationManager.authorizationStatus
+        switch status {
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            refreshWiFiInfo()
+        default:
+            break
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        refreshWiFiInfo()
     }
 
     @objc func toggleBits() { showInBits.toggle() }
@@ -1195,6 +1388,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         publicIPTimer?.invalidate()
         publicIPTimer = Timer.scheduledTimer(withTimeInterval: 900.0, repeats: true) { [weak self] _ in
             self?.fetchPublicIP()
+            self?.fetchPublicIPv6()
             self?.fetchLocalIP()
         }
         RunLoop.main.add(publicIPTimer!, forMode: .common)
@@ -1282,19 +1476,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let inColor: NSColor = download > speedThreshold ? .systemGreen : .labelColor
         let outColor: NSColor = upload > speedThreshold ? .systemOrange : .labelColor
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11.0, weight: .regular)
+        let attr = NSMutableAttributedString()
 
-        let attr = NSMutableAttributedString(
-            string: "\(monitorModel.quality.trayGlyph) ",
-            attributes: [.foregroundColor: monitorModel.qualityColor, .font: font]
-        )
-        attr.append(NSAttributedString(
-            string: "↓\(inStr) ",
-            attributes: [.foregroundColor: inColor, .font: font]
-        ))
-        attr.append(NSAttributedString(
-            string: "↑\(outStr)",
-            attributes: [.foregroundColor: outColor, .font: font]
-        ))
+        switch trayPreset {
+        case .qualityOnly:
+            attr.append(NSAttributedString(
+                string: monitorModel.quality.trayGlyph,
+                attributes: [.foregroundColor: monitorModel.qualityColor, .font: font]
+            ))
+        case .downOnly:
+            attr.append(NSAttributedString(
+                string: "\(monitorModel.quality.trayGlyph) ↓\(inStr)",
+                attributes: [.foregroundColor: inColor, .font: font]
+            ))
+            attr.addAttribute(.foregroundColor, value: monitorModel.qualityColor, range: NSRange(location: 0, length: 1))
+        case .upOnly:
+            attr.append(NSAttributedString(
+                string: "\(monitorModel.quality.trayGlyph) ↑\(outStr)",
+                attributes: [.foregroundColor: outColor, .font: font]
+            ))
+            attr.addAttribute(.foregroundColor, value: monitorModel.qualityColor, range: NSRange(location: 0, length: 1))
+        case .rates:
+            attr.append(NSAttributedString(
+                string: "\(monitorModel.quality.trayGlyph) ",
+                attributes: [.foregroundColor: monitorModel.qualityColor, .font: font]
+            ))
+            attr.append(NSAttributedString(
+                string: "↓\(inStr) ",
+                attributes: [.foregroundColor: inColor, .font: font]
+            ))
+            attr.append(NSAttributedString(
+                string: "↑\(outStr)",
+                attributes: [.foregroundColor: outColor, .font: font]
+            ))
+        }
         return attr
     }
 

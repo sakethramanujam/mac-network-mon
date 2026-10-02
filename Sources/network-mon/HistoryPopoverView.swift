@@ -316,11 +316,21 @@ struct HistoryPopoverView: View {
                 .help("Refresh IPs")
             }
             .font(.caption)
-            Text("\(model.localIP)  ·  \(model.publicIP)")
+            Text("Local \(model.localIP)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
-                .lineLimit(2)
+                .lineLimit(1)
+            Text("IPv4 \(model.publicIP)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+            Text("IPv6 \(model.publicIPv6)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(1)
         }
     }
 
@@ -391,7 +401,7 @@ struct HistoryPopoverView: View {
 
     private var footer: some View {
         HStack {
-            Text("Left-click graph · Right-click menu")
+            Text("Left-click graph · Right-click menu · ⌃⌥N")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             Spacer()

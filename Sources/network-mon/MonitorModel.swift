@@ -81,6 +81,7 @@ final class MonitorModel: ObservableObject {
     @Published var quality: ConnectionQuality = .unknown
     @Published var localIP: String = "Fetching…"
     @Published var publicIP: String = "Fetching…"
+    @Published var publicIPv6: String = "—"
     @Published var selectedInterface: String = "All"
     @Published var showInBits: Bool = false
     @Published var compactMode: Bool = false
