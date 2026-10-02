@@ -2,6 +2,14 @@ import Foundation
 import Combine
 import AppKit
 
+struct InterfaceRate: Identifiable, Equatable {
+    var id: String { name }
+    let name: String
+    let download: Double
+    let upload: Double
+    var total: Double { download + upload }
+}
+
 struct SpeedSample: Identifiable, Equatable {
     let id: UUID
     let date: Date
@@ -92,6 +100,7 @@ final class MonitorModel: ObservableObject {
     @Published var vpnActive: Bool = false
     @Published var tunnelInterfaces: [String] = []
     @Published var monitorVPNOnly: Bool = false
+    @Published var interfaceRates: [InterfaceRate] = []
 
     @Published var speedTestPhase: SpeedTestPhase = .idle
     @Published var lastDownloadResult: String?

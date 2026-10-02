@@ -27,6 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     var previousBytesIn: UInt64 = 0
     var previousBytesOut: UInt64 = 0
+    var previousInterfaceBytes: [String: (UInt64, UInt64)] = [:]
 
     var initialBytesIn: UInt64 = 0
     var initialBytesOut: UInt64 = 0
@@ -1122,6 +1123,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let diffIn = bytesIn >= previousBytesIn ? bytesIn - previousBytesIn : 0
         let diffOut = bytesOut >= previousBytesOut ? bytesOut - previousBytesOut : 0
+
+        var rates: [InterfaceRate] = []
+        for (name, vals) in stats {
+            let prev = previousInterfaceBytes[name] ?? vals
+            let dIn = vals.0 >= prev.0 ? vals.0 - prev.0 : 0
+            let dOut = vals.1 >= prev.1 ? vals.1 - prev.1 : 0
+            let rIn = Double(dIn) / updateInterval
+            let rOut = Double(dOut) / updateInterval
+            if rIn > 1 || rOut > 1 || TunnelDetect.isTunnelInterface(name) {
+                rates.append(InterfaceRate(name: name, download: rIn, upload: rOut))
+            }
+        }
+        rates.sort { $0.total > $1.total }
+        monitorModel.interfaceRates = Array(rates.prefix(8))
+        previousInterfaceBytes = stats
 
         checkDateRollover()
         dailyBytesIn += diffIn

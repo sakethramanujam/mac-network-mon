@@ -13,6 +13,7 @@ struct HistoryPopoverView: View {
             qualitySection
             wifiSection
             vpnSection
+            interfaceBreakdownSection
             chartSection
             totalsSection
             speedTestSection
@@ -105,6 +106,36 @@ struct HistoryPopoverView: View {
                     Spacer()
                 }
                 .font(.caption)
+            }
+        }
+    }
+
+    private var interfaceBreakdownSection: some View {
+        Group {
+            if !model.interfaceRates.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Divider()
+                    Text("Top interfaces")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    ForEach(model.interfaceRates.prefix(5)) { rate in
+                        HStack {
+                            Text(rate.name)
+                                .frame(width: 64, alignment: .leading)
+                            Text("↓ \(model.formatRate(rate.download))")
+                                .foregroundStyle(.green)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("↑ \(model.formatRate(rate.upload))")
+                                .foregroundStyle(.orange)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(.caption2)
+                        .monospacedDigit()
+                    }
+                    Text("Per-app top talkers need a privileged helper outside the App Sandbox.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }
