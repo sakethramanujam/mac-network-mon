@@ -58,8 +58,9 @@ struct HistoryPopoverView: View {
                 metric("Latency", model.latencyText)
                 metric("Jitter", model.jitterText)
                 metric("Loss", model.lossText)
+                metric("DNS", model.dnsLatencyText)
             }
-            Text("Probe: \(model.latencyHost)")
+            Text("HTTPS \(model.latencyHost) · DNS \(model.dnsHost)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

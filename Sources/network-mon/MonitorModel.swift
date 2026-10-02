@@ -76,6 +76,8 @@ final class MonitorModel: ObservableObject {
     @Published var latencyHost: String = LatencyHost.defaultHost
     @Published var jitterText: String = "—"
     @Published var lossText: String = "—"
+    @Published var dnsLatencyText: String = "—"
+    @Published var dnsHost: String = "example.com"
     @Published var quality: ConnectionQuality = .unknown
     @Published var localIP: String = "Fetching…"
     @Published var publicIP: String = "Fetching…"

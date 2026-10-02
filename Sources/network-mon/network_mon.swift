@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem?
     var timer: Timer?
     var latencyTimer: Timer?
+    var dnsTimer: Timer?
     var publicIPTimer: Timer?
     var popover: NSPopover?
     let monitorModel = MonitorModel()
@@ -492,6 +493,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func refreshWiFiInfo() {
         let status = WiFiInfoProvider.current()
         monitorModel.wifi = status
+    }
+
+    func measureDNSLatency() {
+        let host = UserDefaults.standard.string(forKey: "DNSLatencyHost") ?? "example.com"
+        monitorModel.dnsHost = host
+        let start = Date()
+        DispatchQueue.global(qos: .utility).async {
+            var hints = addrinfo(
+                ai_flags: AI_ADDRCONFIG,
+                ai_family: AF_UNSPEC,
+                ai_socktype: SOCK_STREAM,
+                ai_protocol: 0,
+                ai_addrlen: 0,
+                ai_canonname: nil,
+                ai_addr: nil,
+                ai_next: nil
+            )
+            var result: UnsafeMutablePointer<addrinfo>?
+            let status = getaddrinfo(host, "443", &hints, &result)
+            if let result { freeaddrinfo(result) }
+            let ms = Date().timeIntervalSince(start) * 1000
+            DispatchQueue.main.async {
+                if status == 0 {
+                    self.monitorModel.dnsLatencyText = String(format: "%.0fms", ms)
+                } else {
+                    self.monitorModel.dnsLatencyText = "Fail"
+                }
+                self.refreshInfoMenuItems()
+            }
+        }
     }
 
     private var speedTestMeasID = ""
@@ -1087,6 +1118,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         RunLoop.main.add(latencyTimer!, forMode: .common)
         measureLatency()
+
+        dnsTimer?.invalidate()
+        dnsTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+            self?.measureDNSLatency()
+        }
+        RunLoop.main.add(dnsTimer!, forMode: .common)
+        measureDNSLatency()
 
         publicIPTimer?.invalidate()
         publicIPTimer = Timer.scheduledTimer(withTimeInterval: 900.0, repeats: true) { [weak self] _ in
