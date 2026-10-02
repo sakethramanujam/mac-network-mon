@@ -18,6 +18,22 @@ final class NetworkMonTests: XCTestCase {
         XCTAssertGreaterThan(stats.lossPercent, 40)
     }
 
+    func testUsageExportCSVContainsPeriods() {
+        let csv = UsageExport.csv(
+            sessionIn: 1,
+            sessionOut: 2,
+            dailyIn: 3,
+            dailyOut: 4,
+            monthlyIn: 5,
+            monthlyOut: 6,
+            billingIn: 7,
+            billingOut: 8,
+            billingPeriod: "2026-03-15"
+        )
+        XCTAssertTrue(csv.contains("session,1,2"))
+        XCTAssertTrue(csv.contains("billing_period_key,2026-03-15"))
+    }
+
     func testBillingCyclePeriodKeyRollsBeforeStartDay() {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: 0)!
