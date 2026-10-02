@@ -1,0 +1,61 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "Show Graph" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show Graph"
+          }
+        }
+      }
+    },
+    "Export Usage CSV…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Export Usage CSV…"
+          }
+        }
+      }
+    },
+    "Quality" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quality"
+          }
+        }
+      }
+    },
+    "Speed Test" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speed Test"
+          }
+        }
+      }
+    },
+    "Quit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quit"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}
