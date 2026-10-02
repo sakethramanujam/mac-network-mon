@@ -47,6 +47,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private var latencyProbes: [LatencyProbe] = []
     private var wifiTimer: Timer?
+    private var highSpeedStreak: TimeInterval = 0
+    private var lowSpeedStreak: TimeInterval = 0
+    private var lastHighSpeedNotify: Date?
+    private var lastLowSpeedNotify: Date?
 
     var updateInterval: TimeInterval {
         get {
@@ -126,6 +130,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             UserDefaults.standard.set(newValue, forKey: "SpeedThreshold")
             buildMenu()
             updateNetworkStats()
+        }
+    }
+
+    var thresholdAlertsEnabled: Bool {
+        get {
+            UserDefaults.standard.object(forKey: "ThresholdAlertsEnabled") == nil
+                ? true
+                : UserDefaults.standard.bool(forKey: "ThresholdAlertsEnabled")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "ThresholdAlertsEnabled")
+            buildMenu()
         }
     }
 
@@ -897,6 +913,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         vpnOnlyItem.state = monitorVPNOnly ? .on : .off
         settingsMenu.addItem(vpnOnlyItem)
 
+        let alertItem = NSMenuItem(title: "Speed Threshold Alerts", action: #selector(toggleThresholdAlerts), keyEquivalent: "")
+        alertItem.target = self
+        alertItem.state = thresholdAlertsEnabled ? .on : .off
+        settingsMenu.addItem(alertItem)
+
         settingsItem.submenu = settingsMenu
         menu.addItem(settingsItem)
 
@@ -1085,6 +1106,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc func toggleCompact() { compactMode.toggle() }
     @objc func toggleHide() { hideInactive.toggle() }
     @objc func toggleVPNOnly() { monitorVPNOnly.toggle() }
+    @objc func toggleThresholdAlerts() { thresholdAlertsEnabled.toggle() }
+
+    private func checkThresholdAlerts(speedIn: Double, speedOut: Double) {
+        guard thresholdAlertsEnabled else {
+            highSpeedStreak = 0
+            lowSpeedStreak = 0
+            return
+        }
+
+        let peak = max(speedIn, speedOut)
+        if peak > speedThreshold {
+            highSpeedStreak += updateInterval
+            lowSpeedStreak = 0
+            if highSpeedStreak >= 5 {
+                let now = Date()
+                if lastHighSpeedNotify == nil || now.timeIntervalSince(lastHighSpeedNotify!) > 300 {
+                    lastHighSpeedNotify = now
+                    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] _, _ in
+                        DispatchQueue.main.async {
+                            self?.postNotification(
+                                id: "HighSpeed",
+                                title: "High Speed Sustained",
+                                body: "Traffic stayed above the warning threshold for 5+ seconds."
+                            )
+                        }
+                    }
+                }
+                highSpeedStreak = 0
+            }
+        } else if peak < 1 {
+            lowSpeedStreak += updateInterval
+            highSpeedStreak = 0
+            if lowSpeedStreak >= 60 {
+                let now = Date()
+                if lastLowSpeedNotify == nil || now.timeIntervalSince(lastLowSpeedNotify!) > 1800 {
+                    lastLowSpeedNotify = now
+                    // Quiet optional idle notice — skip by default noise; only when enabled path already on.
+                }
+                lowSpeedStreak = 0
+            }
+        } else {
+            highSpeedStreak = 0
+            lowSpeedStreak = 0
+        }
+    }
 
     @objc func toggleLaunchAtLogin() {
         let service = SMAppService.mainApp
@@ -1194,6 +1260,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         monitorModel.appendSample(download: speedIn, upload: speedOut)
 
         checkDataCap()
+        checkThresholdAlerts(speedIn: speedIn, speedOut: speedOut)
         refreshInfoMenuItems()
 
         // Keep a fixed-width title even when idle so the item does not jump.
